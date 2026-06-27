@@ -1,44 +1,102 @@
 # Quick Start
 
-Get a BoxLang Android app running on an emulator. Assumes the Android SDK is installed and
-`ANDROID_HOME` is set (the Android modules are only included in the Gradle build when it is).
+## Option A — No Android SDK: use the simulator
 
-## 1. Create the app payload (100% BoxLang)
+The fastest way to start. You only need JDK 21 — no Android Studio, no emulator.
 
-Everything lives under `src/main/bx`:
+```bash
+git clone https://github.com/ortus-boxlang/boxlang-android.git
+cd boxlang-android
+
+# Start the simulator pointing at the bundled sample app
+./gradlew :simulator:run --args="--app android-sample-web/src/main/bx --port 8085"
+```
+
+Open `http://localhost:8085` — the BoxLang MVC app is live. Edit any `.bx` or `.bxm` file
+under `android-sample-web/src/main/bx` and reload the page; changes are reflected immediately
+(no rebuild needed for templates).
+
+---
+
+## Option B — Full Android: emulator or physical device
+
+Requires the Android SDK. Set `ANDROID_HOME` before running Gradle.
+
+### 1. Install the Android SDK (no Android Studio required)
+
+```bash
+SDK=$HOME/android-sdk
+curl -o cmdtools.zip https://dl.google.com/android/repository/commandlinetools-linux-13114758_latest.zip
+mkdir -p "$SDK/cmdline-tools" && unzip -q cmdtools.zip -d "$SDK/cmdline-tools" \
+  && mv "$SDK/cmdline-tools/cmdline-tools" "$SDK/cmdline-tools/latest"
+
+export ANDROID_HOME=$SDK
+yes | "$SDK/cmdline-tools/latest/bin/sdkmanager" --licenses
+"$SDK/cmdline-tools/latest/bin/sdkmanager" "platform-tools" "platforms;android-35" "build-tools;34.0.0"
+```
+
+### 2. Build and install the sample app
+
+```bash
+./gradlew :android-sample-web:assembleDebug   # AOT-compiles BoxLang + produces the APK
+./gradlew :android-sample-web:installDebug    # deploy to a running emulator or device
+```
+
+The APK bundles:
+- The BoxLang runtime (dexed)
+- The AOT-compiled BoxLang app classes (`boxgenerated.*`, dexed)
+- The raw `src/main/bx` payload under `assets/bx/` (for on-device template reads)
+
+---
+
+## Create your own BoxLang Android app
+
+### App directory layout
 
 ```
 src/main/bx/
-├─ boxlang.json
-├─ Application.bx
-├─ handlers/Main.bx
-├─ views/main/index.bxm
-└─ layouts/main.bxm
+├─ boxlang.json          # runtime config (loaded on boot)
+├─ Application.bx        # lifecycle + router configuration
+├─ handlers/
+│   └─ Main.bx
+├─ views/
+│   └─ main/index.bxm
+└─ layouts/
+    └─ main.bxm
 ```
 
-`boxlang.json` — point the runtime at the app folders:
+### `boxlang.json`
 
 ```json
 {
-  "mappings": { "/": "./", "/handlers": "./handlers", "/views": "./views", "/layouts": "./layouts" },
+  "mappings": {
+    "/":         "./",
+    "/handlers": "./handlers",
+    "/views":    "./views",
+    "/layouts":  "./layouts"
+  },
   "modulesDirectory": [ "./modules" ],
   "javaLibraryPaths": [ "./lib" ]
 }
 ```
 
-`Application.bx` — wire the app + routes:
+### `Application.bx` — wire routes and seed state
 
 ```java
 class {
     this.name = "MyApp";
+
     function configureRouter( router ) {
-        router.setDefaultEvent( "Main.index" );   // "/" -> Main.index
+        router.setDefaultEvent( "Main.index" );   // "/" → Main.index
     }
-    function onApplicationStart() { return true; }
+
+    function onApplicationStart() {
+        return true;
+    }
 }
 ```
 
-`handlers/Main.bx` — the handler runs first and sets the view:
+### `handlers/Main.bx` — action runs first, sets the view
 
 ```java
 class {
@@ -49,21 +107,27 @@ class {
 }
 ```
 
-`views/main/index.bxm` and `layouts/main.bxm`:
+### `views/main/index.bxm` and `layouts/main.bxm`
 
 ```html
 <!-- views/main/index.bxm -->
 <bx:output><h2>#rc.title#</h2></bx:output>
 
 <!-- layouts/main.bxm -->
-<bx:output><html><body><main>#renderedView#</main></body></html></bx:output>
+<bx:output>
+<html><body>
+  <main>#renderedView#</main>
+</body></html>
+</bx:output>
 ```
 
-## 2. Manifest — point at the generic entry points (no host classes)
+### Android manifest — point at the generic entry points (no subclassing)
 
 ```xml
 <application android:name="ortus.boxlang.runtime.android.BoxAndroidApplication" ...>
-    <activity android:name="ortus.boxlang.runtime.android.BoxActivity" android:exported="true">
+    <activity
+        android:name="ortus.boxlang.runtime.android.BoxActivity"
+        android:exported="true">
         <intent-filter>
             <action android:name="android.intent.action.MAIN" />
             <category android:name="android.intent.category.LAUNCHER" />
@@ -72,21 +136,20 @@ class {
 </application>
 ```
 
-## 3. Depend on the runtime
+### `build.gradle` — depend on the runtime AAR
 
 ```gradle
-dependencies { implementation project( ':runtimes:android' ) } // or io.boxlang:boxlang-android in a standalone repo
+dependencies {
+    // From a local publish (see README):
+    implementation 'ortus.boxlang:boxlang-android:1.0.0'
+    coreLibraryDesugaring 'com.android.tools:desugar_jdk_libs:2.0.4'
+}
 ```
 
-## 4. Build, install, run
+### Verify everything works first
 
 ```bash
-./gradlew :runtimes:android-sample-web:assembleDebug   # AOT-compiles bx + builds the APK
-./gradlew :runtimes:android-sample-web:installDebug    # deploy to a running emulator/device
-adb shell am start -n com.example.boxweb/ortus.boxlang.runtime.android.BoxActivity
+./gradlew test    # all unit tests — no Android SDK required
 ```
 
-You should see the `Main.index` screen. Tap a link → it routes in-process to the matching
-handler; submit a form → the action runs and re-renders. **No web server is involved.**
-
-See [tutorial.md](tutorial.md) for the full list + detail + add walkthrough.
+See [tutorial.md](tutorial.md) for a full list + detail + add walkthrough.
