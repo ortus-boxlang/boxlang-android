@@ -17,9 +17,14 @@
  */
 package ortus.boxlang.runtime.android;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import ortus.boxlang.runtime.BoxRuntime;
 import ortus.boxlang.runtime.application.ApplicationClassListener;
 import ortus.boxlang.runtime.application.BaseApplicationListener;
-import ortus.boxlang.runtime.context.IBoxContext;
+import ortus.boxlang.runtime.context.RequestBoxContext;
+import ortus.boxlang.runtime.context.ScriptingRequestBoxContext;
 import ortus.boxlang.runtime.runnables.IClassRunnable;
 import ortus.boxlang.runtime.scopes.Key;
 
@@ -28,8 +33,12 @@ import ortus.boxlang.runtime.scopes.Key;
  * the app's {@code Application.bx}, using convention-over-configuration: a hook fires only
  * when the developer has defined a matching function, otherwise it is a clean no-op.
  * <p>
- * This mirrors how {@link ApplicationClassListener} invokes standard lifecycle methods
- * (check {@code thisScope} for the key, then {@code dereferenceAndInvoke}). Supported hooks:
+ * Each hook invocation creates its own short-lived {@link ScriptingRequestBoxContext} so
+ * lifecycle events (onActivityResume, onActivityPause, etc.) are never coupled to a stale
+ * or recycled request context. The application listener — and with it the application scope
+ * — is resolved fresh each time via the BoxLang application service.
+ * <p>
+ * Supported hooks:
  * {@code onActivityCreate}, {@code onActivityStart}, {@code onActivityResume},
  * {@code onActivityPause}, {@code onActivityStop}, {@code onActivityDestroy},
  * {@code onActivityResult}, {@code onPermissionResult}, {@code onBackPressed},
@@ -37,33 +46,46 @@ import ortus.boxlang.runtime.scopes.Key;
  */
 public class AndroidLifecycleDispatcher {
 
-	private final IBoxContext context;
+	private static final Logger	log	= LoggerFactory.getLogger( AndroidLifecycleDispatcher.class );
+
+	private final BoxRuntime	runtime;
 
 	/**
-	 * @param context The request context whose application listener owns the hooks
+	 * @param runtime The BoxLang runtime (used to create per-hook contexts)
 	 */
-	public AndroidLifecycleDispatcher( IBoxContext context ) {
-		this.context = context;
+	public AndroidLifecycleDispatcher( BoxRuntime runtime ) {
+		this.runtime = runtime;
 	}
 
 	/**
 	 * Invoke an optional Android hook on {@code Application.bx} if it is defined.
+	 * Creates a fresh request context for the duration of the hook call.
 	 *
-	 * @param hook The hook name (e.g. {@code onActivityResume})
+	 * @param hook The hook name (e.g. {@code "onActivityResume"})
 	 * @param args The positional arguments to pass
 	 *
-	 * @return The hook's return value, or {@code null} if the hook is not defined
+	 * @return The hook's return value, or {@code null} if the hook is not defined or an error occurs
 	 */
 	public Object invokeHook( String hook, Object... args ) {
-		IClassRunnable listener = resolveListenerClass();
-		if ( listener == null ) {
+		ScriptingRequestBoxContext ctx = new ScriptingRequestBoxContext( this.runtime.getRuntimeContext(), true );
+		RequestBoxContext.setCurrent( ctx );
+		try {
+			IClassRunnable listener = resolveListenerClass( ctx );
+			if ( listener == null ) {
+				return null;
+			}
+			Key hookKey = Key.of( hook );
+			if ( !listener.getThisScope().containsKey( hookKey ) ) {
+				return null;
+			}
+			return listener.dereferenceAndInvoke( ctx, hookKey, args, false );
+		} catch ( Exception e ) {
+			log.warn( "BoxLang Android: error in lifecycle hook {} — {}", hook, e.getMessage() );
 			return null;
+		} finally {
+			ctx.shutdown();
+			RequestBoxContext.removeCurrent();
 		}
-		Key hookKey = Key.of( hook );
-		if ( !listener.getThisScope().containsKey( hookKey ) ) {
-			return null;		// hook not defined — clean no-op
-		}
-		return listener.dereferenceAndInvoke( this.context, hookKey, args, false );
 	}
 
 	/**
@@ -72,15 +94,21 @@ public class AndroidLifecycleDispatcher {
 	 * @return {@code true} if {@code Application.bx} defines the hook
 	 */
 	public boolean hasHook( String hook ) {
-		IClassRunnable listener = resolveListenerClass();
-		return listener != null && listener.getThisScope().containsKey( Key.of( hook ) );
+		ScriptingRequestBoxContext ctx = new ScriptingRequestBoxContext( this.runtime.getRuntimeContext(), true );
+		RequestBoxContext.setCurrent( ctx );
+		try {
+			IClassRunnable listener = resolveListenerClass( ctx );
+			return listener != null && listener.getThisScope().containsKey( Key.of( hook ) );
+		} finally {
+			ctx.shutdown();
+			RequestBoxContext.removeCurrent();
+		}
 	}
 
-	private IClassRunnable resolveListenerClass() {
-		BaseApplicationListener listener = this.context.getParentOfType( ortus.boxlang.runtime.context.RequestBoxContext.class )
-		    .getApplicationListener();
-		if ( listener instanceof ApplicationClassListener classListener ) {
-			return classListener.getListenerClass();
+	private IClassRunnable resolveListenerClass( ScriptingRequestBoxContext ctx ) {
+		BaseApplicationListener appListener = ctx.getApplicationListener();
+		if ( appListener instanceof ApplicationClassListener acl ) {
+			return acl.getListenerClass();
 		}
 		return null;
 	}

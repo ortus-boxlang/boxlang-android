@@ -37,7 +37,9 @@ import ortus.boxlang.runtime.android.mvc.DispatchResult;
 import ortus.boxlang.runtime.android.mvc.MVCDispatcher;
 import ortus.boxlang.runtime.android.mvc.RoutingService;
 import ortus.boxlang.runtime.android.mvc.ViewRenderer;
-import ortus.boxlang.runtime.context.IBoxContext;
+import ortus.boxlang.runtime.application.ApplicationClassListener;
+import ortus.boxlang.runtime.application.BaseApplicationListener;
+import ortus.boxlang.runtime.context.RequestBoxContext;
 import ortus.boxlang.runtime.context.ScriptingRequestBoxContext;
 import ortus.boxlang.runtime.runnables.IClassRunnable;
 import ortus.boxlang.runtime.scopes.Key;
@@ -47,17 +49,18 @@ import ortus.boxlang.runtime.types.Struct;
 /**
  * Development HTTP server that runs a BoxLang MVC app on the JVM with no Android SDK required.
  * <p>
- * Boots {@link BoxRuntime} with the BoxLang app directory as its home, configures the router
- * from {@code Application.bx#configureRouter()}, seeds application state via
- * {@code onApplicationStart()}, then serves HTTP requests through the same
- * {@link MVCDispatcher} / {@link ViewRenderer} pipeline that runs on the device.
+ * Mirrors the {@code WebRequestExecutor} pattern from {@code boxlang-web-support}:
+ * each HTTP request creates a fresh {@link ScriptingRequestBoxContext}, fires the full
+ * BoxLang request lifecycle ({@code onRequestStart} → dispatch → {@code onRequestEnd}),
+ * then shuts the context down. The BoxLang application service manages the application
+ * scope and fires {@code onApplicationStart} exactly once per process lifetime —
+ * no manual scope injection needed.
  * <p>
- * Relocates ({@code event.relocate(target)}) are forwarded as HTTP 302 redirects; POST form
- * bodies are parsed exactly as the Android WebView JS bridge does.
- * <p>
- * A shared {@link IStruct} stands in for BoxLang's application scope and is injected into
- * every request's variables scope as {@code application}. Writes to {@code application.items}
- * (or any other key) are therefore visible across subsequent requests.
+ * The {@code configureRouter(router)} convention hook is called once at startup after
+ * the application descriptor is loaded for the first time.
+ * Relocations ({@code event.relocate(target)}) are returned as HTTP 302 redirects.
+ * POST form bodies ({@code application/x-www-form-urlencoded}) are parsed and passed
+ * as request params, matching the Android WebView JS bridge behaviour.
  *
  * <pre>
  * ./gradlew :simulator:run --args="--app ../android-sample-web/src/main/bx --port 8085"
@@ -71,8 +74,6 @@ public class BoxLangSimulator {
 	private final int			port;
 	private final BoxRuntime	runtime;
 	private final MVCDispatcher	dispatcher;
-	// Shared application-scope struct — injected into every request context.
-	private final IStruct		applicationScope;
 
 	// ── Entry point ───────────────────────────────────────────────────────────
 
@@ -91,9 +92,8 @@ public class BoxLangSimulator {
 	// ── Constructor ───────────────────────────────────────────────────────────
 
 	public BoxLangSimulator( String appPath, int port ) {
-		this.appPath          = Paths.get( appPath ).toAbsolutePath().toString();
-		this.port             = port;
-		this.applicationScope = new Struct();
+		this.appPath = Paths.get( appPath ).toAbsolutePath().toString();
+		this.port    = port;
 
 		// Boot BoxRuntime with the app directory as home.
 		System.setProperty( "boxlang.home", this.appPath );
@@ -101,7 +101,7 @@ public class BoxLangSimulator {
 
 		// Register "/app" so createObject("app.handlers.Items") → <appPath>/handlers/Items.bx
 		// — same mapping convention used by MVCDispatcherTest.
-		runtime.getConfiguration().registerMapping( "/app", Struct.of(
+		this.runtime.getConfiguration().registerMapping( "/app", Struct.of(
 		    Key.path, this.appPath,
 		    Key.external, true
 		) );
@@ -109,35 +109,50 @@ public class BoxLangSimulator {
 		// Build the MVC stack pointing at the app's views and layouts.
 		RoutingService	routingService	= new RoutingService();
 		ViewRenderer	viewRenderer	= new ViewRenderer(
-		    runtime,
+		    this.runtime,
 		    this.appPath + "/views",
 		    this.appPath + "/layouts"
 		);
-		this.dispatcher = new MVCDispatcher( runtime, routingService, viewRenderer, "app.handlers" );
+		this.dispatcher = new MVCDispatcher( this.runtime, routingService, viewRenderer, "app.handlers" );
 
-		// Load Application.bx, configure the router, and fire onApplicationStart.
-		bootstrapApplication( routingService );
+		// Load Application.bx for the first time: fires onApplicationStart automatically,
+		// then call our configureRouter(router) convention hook if defined.
+		bootstrapRouter( routingService );
 	}
 
 	// ── Bootstrap ─────────────────────────────────────────────────────────────
 
-	private void bootstrapApplication( RoutingService routingService ) {
-		IBoxContext ctx = newRequestContext();
+	/**
+	 * Create a bootstrap request context to load the application descriptor.
+	 * The BoxLang application service fires {@code onApplicationStart} automatically.
+	 * We then call the {@code configureRouter(router)} hook if the app defines it.
+	 */
+	private void bootstrapRouter( RoutingService routingService ) {
+		ScriptingRequestBoxContext ctx = new ScriptingRequestBoxContext( this.runtime.getRuntimeContext(), true );
+		RequestBoxContext.setCurrent( ctx );
 		try {
-			Object raw = ctx.invokeFunction( Key.createObject, new Object[] { "app.Application" } );
-			if ( raw instanceof IClassRunnable app ) {
-				// configureRouter(router) — BoxLang calls Java methods through its interop layer.
-				Map<Key, Object> routerArgs = new LinkedHashMap<>();
-				routerArgs.put( Key.of( "router" ), routingService.getRouter() );
-				app.dereferenceAndInvoke( ctx, Key.of( "configureRouter" ), routerArgs, false );
+			BaseApplicationListener appListener = ctx.getApplicationListener();
 
-				// onApplicationStart() — seeds application.items (and any other state).
-				app.dereferenceAndInvoke( ctx, Key.of( "onApplicationStart" ), new LinkedHashMap<>(), false );
+			if ( appListener instanceof ApplicationClassListener acl ) {
+				IClassRunnable	listenerClass	= acl.getListenerClass();
+				Key				routerKey		= Key.of( "configureRouter" );
 
-				log.info( "Application.bx bootstrapped — router configured, onApplicationStart complete." );
+				if ( listenerClass.getThisScope().containsKey( routerKey ) ) {
+					Map<Key, Object> args = new LinkedHashMap<>();
+					args.put( Key.of( "router" ), routingService.getRouter() );
+					listenerClass.dereferenceAndInvoke( ctx, routerKey, args, false );
+					log.info( "Application.bx bootstrapped — configureRouter() complete, onApplicationStart fired." );
+				} else {
+					log.info( "Application.bx loaded — no configureRouter(), using convention routing." );
+				}
+			} else {
+				log.warn( "No Application.bx found — using convention routing only." );
 			}
 		} catch ( Exception e ) {
 			log.warn( "Could not bootstrap Application.bx ({}): using convention routing only.", e.getMessage() );
+		} finally {
+			ctx.shutdown();
+			RequestBoxContext.removeCurrent();
 		}
 	}
 
@@ -158,31 +173,48 @@ public class BoxLangSimulator {
 		System.out.println( "  ╚═══════════════════════════════════════════════════════════╝" );
 		System.out.println();
 
-		// Block the main thread until the process is killed.
 		Thread.currentThread().join();
 	}
+
+	// ── Request handling ──────────────────────────────────────────────────────
 
 	private void handle( HttpExchange exchange ) throws IOException {
 		String method = exchange.getRequestMethod().toUpperCase();
 		String uri    = exchange.getRequestURI().toString();
 
+		// Parse POST form params from the request body.
+		IStruct params = null;
+		if ( "POST".equals( method ) ) {
+			byte[] body = exchange.getRequestBody().readAllBytes();
+			params = new Struct();
+			parseFormBody( new String( body, StandardCharsets.UTF_8 ), params );
+		}
+
+		ScriptingRequestBoxContext ctx = new ScriptingRequestBoxContext( this.runtime.getRuntimeContext(), true );
+		RequestBoxContext.setCurrent( ctx );
 		try {
-			// Decode POST form params from the request body.
-			IStruct params = null;
-			if ( "POST".equals( method ) ) {
-				byte[] body = exchange.getRequestBody().readAllBytes();
-				params = new Struct();
-				parseFormBody( new String( body, StandardCharsets.UTF_8 ), params );
+			BaseApplicationListener appListener = ctx.getApplicationListener();
+
+			boolean proceed = appListener.onRequestStart( ctx, new Object[] { uri } );
+
+			DispatchResult result = null;
+			if ( proceed ) {
+				result = this.dispatcher.dispatch( ctx, uri, method, params );
 			}
 
-			IBoxContext		ctx		= newRequestContext();
-			DispatchResult	result	= dispatcher.dispatch( ctx, uri, method, params );
-			log.debug( "{} {} → {}", method, uri, result.isRelocate() ? "302 " + result.getRelocateTarget() : "200" );
+			appListener.onRequestEnd( ctx, new Object[] { uri } );
+
+			if ( result == null ) {
+				exchange.sendResponseHeaders( 204, -1 );
+				return;
+			}
 
 			if ( result.isRelocate() ) {
+				log.debug( "{} {} → 302 {}", method, uri, result.getRelocateTarget() );
 				exchange.getResponseHeaders().set( "Location", result.getRelocateTarget() );
 				exchange.sendResponseHeaders( 302, -1 );
 			} else {
+				log.debug( "{} {} → 200", method, uri );
 				byte[] response = result.getHtml().getBytes( StandardCharsets.UTF_8 );
 				exchange.getResponseHeaders().set( "Content-Type", "text/html; charset=UTF-8" );
 				exchange.sendResponseHeaders( 200, response.length );
@@ -192,30 +224,29 @@ public class BoxLangSimulator {
 			}
 		} catch ( Exception e ) {
 			log.error( "Error dispatching {} {}", method, uri, e );
-			String	errorHtml	= "<h1>500 — Internal Server Error</h1><pre>" + escapeHtml( e.getMessage() ) + "</pre>";
-			byte[]	bytes		= errorHtml.getBytes( StandardCharsets.UTF_8 );
-			exchange.getResponseHeaders().set( "Content-Type", "text/html; charset=UTF-8" );
-			exchange.sendResponseHeaders( 500, bytes.length );
-			try ( OutputStream out = exchange.getResponseBody() ) {
-				out.write( bytes );
-			}
+			sendError( exchange, e );
 		} finally {
+			ctx.shutdown();
+			RequestBoxContext.removeCurrent();
 			exchange.close();
 		}
 	}
 
-	// ── Helpers ───────────────────────────────────────────────────────────────
-
-	/**
-	 * Create a fresh per-request context with the shared application scope injected into
-	 * the variables scope as {@code application}. BoxLang handlers access {@code application.*}
-	 * directly (e.g. {@code application.items}), which resolves to this shared struct.
-	 */
-	private IBoxContext newRequestContext() {
-		IBoxContext ctx = new ScriptingRequestBoxContext();
-		ctx.getScopeNearby( Key.variables ).put( Key.of( "application" ), applicationScope );
-		return ctx;
+	private static void sendError( HttpExchange exchange, Exception e ) throws IOException {
+		String	msg		= e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName();
+		String	body	= "<html><body style='font-family:monospace;padding:16px'>"
+		    + "<h2 style='color:#c00'>BoxLang Simulator Error</h2>"
+		    + "<pre>" + escapeHtml( msg ) + "</pre>"
+		    + "</body></html>";
+		byte[] bytes = body.getBytes( StandardCharsets.UTF_8 );
+		exchange.getResponseHeaders().set( "Content-Type", "text/html; charset=UTF-8" );
+		exchange.sendResponseHeaders( 500, bytes.length );
+		try ( OutputStream out = exchange.getResponseBody() ) {
+			out.write( bytes );
+		}
 	}
+
+	// ── Helpers ───────────────────────────────────────────────────────────────
 
 	private static void parseFormBody( String body, IStruct target ) {
 		if ( body == null || body.isBlank() ) return;
@@ -229,7 +260,6 @@ public class BoxLangSimulator {
 		}
 	}
 
-	/** Walk common relative paths to find the BoxLang app directory. */
 	private static String resolveDefaultAppPath() {
 		String[] candidates = {
 		    "../android-sample-web/src/main/bx",

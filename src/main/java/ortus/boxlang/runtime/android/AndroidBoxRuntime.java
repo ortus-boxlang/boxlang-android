@@ -18,6 +18,11 @@
 package ortus.boxlang.runtime.android;
 
 import java.io.File;
+import java.util.LinkedHashMap;
+import java.util.Map;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import android.content.Context;
 import android.content.res.AssetManager;
@@ -26,6 +31,13 @@ import ortus.boxlang.runtime.BoxRuntime;
 import ortus.boxlang.runtime.android.mvc.MVCDispatcher;
 import ortus.boxlang.runtime.android.mvc.RoutingService;
 import ortus.boxlang.runtime.android.mvc.ViewRenderer;
+import ortus.boxlang.runtime.application.ApplicationClassListener;
+import ortus.boxlang.runtime.application.BaseApplicationListener;
+import ortus.boxlang.runtime.context.RequestBoxContext;
+import ortus.boxlang.runtime.context.ScriptingRequestBoxContext;
+import ortus.boxlang.runtime.runnables.IClassRunnable;
+import ortus.boxlang.runtime.scopes.Key;
+import ortus.boxlang.runtime.types.Struct;
 
 /**
  * The singleton entry point for running BoxLang on Android.
@@ -42,15 +54,16 @@ import ortus.boxlang.runtime.android.mvc.ViewRenderer;
  */
 public final class AndroidBoxRuntime {
 
-	/**
-	 * The directory (under the app's files dir) the runtime home is seeded into.
-	 */
+	private static final Logger			log				= LoggerFactory.getLogger( AndroidBoxRuntime.class );
+
+	/** The directory (under the app's files dir) the runtime home is seeded into. */
 	public static final String			HOME_DIR_NAME	= "boxlang";
 
-	/**
-	 * The asset directory inside the APK holding the BoxLang app payload.
-	 */
+	/** The asset directory inside the APK holding the BoxLang app payload. */
 	public static final String			ASSET_APP_DIR	= "bx";
+
+	/** Stamp file written after asset seeding; contains the APK versionCode. */
+	private static final String			VERSION_STAMP	= ".boxlang_version";
 
 	private static AndroidBoxRuntime	instance;
 
@@ -66,58 +79,70 @@ public final class AndroidBoxRuntime {
 		this.dispatcher		= dispatcher;
 	}
 
+	// ── Boot ─────────────────────────────────────────────────────────────────
+
 	/**
 	 * Boot the runtime once for the given Android context.
+	 * <p>
+	 * Safe to call from {@link android.app.Application#onCreate()} — subsequent calls are no-ops.
 	 *
-	 * @param context The Android application context
+	 * @param androidCtx The Android application context
 	 *
 	 * @return The booted singleton
 	 */
-	public static synchronized AndroidBoxRuntime boot( Context context ) {
+	public static synchronized AndroidBoxRuntime boot( Context androidCtx ) {
 		if ( instance != null ) {
 			return instance;
 		}
 
-		// 1. Seed the runtime home from the APK assets on first launch.
-		File appHome = new File( context.getFilesDir(), HOME_DIR_NAME );
-		seedFromAssets( context.getAssets(), appHome );
+		// 1. Seed the runtime home from the APK assets, re-seeding on APK upgrades.
+		File appHome = new File( androidCtx.getFilesDir(), HOME_DIR_NAME );
+		seedFromAssets( androidCtx, appHome );
 
-		// 2. Point cache/temp at app-private storage; ART can't write to a global home.
+		// 2. Point BoxLang home at app-private storage (ART can't write to a global dir).
 		System.setProperty( "boxlang.home", appHome.getAbsolutePath() );
 
-		// 3. Install the Android class loader factory BEFORE booting. This makes the runtime
-		// loader the app class loader and modules DexClassLoader-backed — no URLClassLoader,
-		// no runtime defineClass. Must be set before getInstance() builds the runtime loader.
-		BoxRuntime.setClassLoaderFactory( new AndroidClassLoaderFactory( context, appHome ) );
+		// 3. Install the Android class loader factory BEFORE booting so the runtime
+		// never attempts URLClassLoader (absent on ART) and modules use DexClassLoader.
+		BoxRuntime.setClassLoaderFactory( new AndroidClassLoaderFactory( androidCtx, appHome ) );
 
-		// 4. Boot the core runtime with the bundled boxlang.json. The NoOp boxpiler is
-		// chosen automatically via ServiceLoader because it is the only one on the
-		// classpath in the Android distribution.
-		File			configFile		= new File( appHome, "boxlang.json" );
-		BoxRuntime		runtime			= BoxRuntime.getInstance(
-		    /* debugMode */ false,
+		// 4. Boot the core runtime. The NoOp boxpiler is selected automatically via
+		// ServiceLoader — it is the only IBoxpiler on the classpath in the Android dist.
+		File		configFile	= new File( appHome, "boxlang.json" );
+		BoxRuntime	runtime		= BoxRuntime.getInstance(
+		    false,
 		    configFile.exists() ? configFile.getAbsolutePath() : null,
 		    appHome.getAbsolutePath()
 		);
 
-		// 5. Register the routing service and build the MVC front controller.
-		RoutingService	routingService	= new RoutingService();
-		runtime.getConfiguration();		// ensure config is materialized
+		// 5. Register the /app mapping so createObject("app.handlers.Items") resolves
+		// to <appHome>/handlers/Items.bx — the same convention used in tests.
+		runtime.getConfiguration().registerMapping( "/app", Struct.of(
+		    Key.path, appHome.getAbsolutePath(),
+		    Key.external, true
+		) );
 
+		// 6. Build the MVC stack.
+		RoutingService	routingService	= new RoutingService();
 		ViewRenderer	viewRenderer	= new ViewRenderer(
 		    runtime,
 		    new File( appHome, "views" ).getAbsolutePath(),
 		    new File( appHome, "layouts" ).getAbsolutePath()
 		);
-		MVCDispatcher	dispatcher		= new MVCDispatcher( runtime, routingService, viewRenderer, "handlers" );
+		MVCDispatcher	dispatcher		= new MVCDispatcher( runtime, routingService, viewRenderer, "app.handlers" );
 
 		instance = new AndroidBoxRuntime( runtime, appHome, routingService, dispatcher );
+
+		// 7. Load Application.bx (fires onApplicationStart automatically) and call
+		// our configureRouter(router) convention hook if the app defines it.
+		instance.bootstrapRouter();
+
 		return instance;
 	}
 
-	/**
-	 * @return The booted singleton (must call {@link #boot(Context)} first)
-	 */
+	// ── Accessors ─────────────────────────────────────────────────────────────
+
+	/** @return The booted singleton; throws if {@link #boot(Context)} has not been called. */
 	public static AndroidBoxRuntime getInstance() {
 		if ( instance == null ) {
 			throw new IllegalStateException( "AndroidBoxRuntime has not been booted. Call boot(context) first." );
@@ -125,37 +150,29 @@ public final class AndroidBoxRuntime {
 		return instance;
 	}
 
-	/**
-	 * @return The underlying BoxLang runtime
-	 */
+	/** @return The underlying BoxLang runtime. */
 	public BoxRuntime getRuntime() {
 		return this.runtime;
 	}
 
-	/**
-	 * @return The app home directory (seeded from assets)
-	 */
+	/** @return The app home directory (seeded from assets on first launch / upgrade). */
 	public File getAppHome() {
 		return this.appHome;
 	}
 
-	/**
-	 * @return The routing service (owns the router)
-	 */
+	/** @return The routing service (owns the Router). */
 	public RoutingService getRoutingService() {
 		return this.routingService;
 	}
 
-	/**
-	 * @return The MVC front-controller dispatcher
-	 */
+	/** @return The MVC front-controller dispatcher. */
 	public MVCDispatcher getDispatcher() {
 		return this.dispatcher;
 	}
 
-	/**
-	 * Shut the runtime down (process teardown).
-	 */
+	// ── Shutdown ──────────────────────────────────────────────────────────────
+
+	/** Shut the runtime down (process teardown). */
 	public static synchronized void shutdown() {
 		if ( instance != null ) {
 			instance.runtime.shutdown();
@@ -163,26 +180,87 @@ public final class AndroidBoxRuntime {
 		}
 	}
 
+	// ── Bootstrap ─────────────────────────────────────────────────────────────
+
 	/**
-	 * Recursively copy the APK's {@code bx/} asset payload into the app home on first run.
-	 * In dev mode the {@link BoxDevServer} pushes updated files here for hot reload.
-	 *
-	 * @param assets The Android asset manager
-	 * @param target The destination directory
+	 * Load {@code Application.bx} once at boot time so the BoxLang application service
+	 * creates the application scope and fires {@code onApplicationStart}. Then call our
+	 * {@code configureRouter(router)} convention hook if the app defines it.
+	 * <p>
+	 * Subsequent per-request contexts will find the application already running and will
+	 * NOT re-fire {@code onApplicationStart}.
 	 */
-	private static void seedFromAssets( AssetManager assets, File target ) {
-		if ( new File( target, "boxlang.json" ).exists() ) {
-			return;		// already seeded
+	private void bootstrapRouter() {
+		ScriptingRequestBoxContext ctx = new ScriptingRequestBoxContext( this.runtime.getRuntimeContext(), true );
+		RequestBoxContext.setCurrent( ctx );
+		try {
+			BaseApplicationListener appListener = ctx.getApplicationListener();
+
+			if ( appListener instanceof ApplicationClassListener acl ) {
+				IClassRunnable listenerClass = acl.getListenerClass();
+				Key            routerKey     = Key.of( "configureRouter" );
+
+				if ( listenerClass.getThisScope().containsKey( routerKey ) ) {
+					Map<Key, Object> args = new LinkedHashMap<>();
+					args.put( Key.of( "router" ), this.routingService.getRouter() );
+					listenerClass.dereferenceAndInvoke( ctx, routerKey, args, false );
+					log.info( "BoxLang Android: configureRouter() called — routes registered." );
+				}
+			}
+		} catch ( Exception e ) {
+			log.warn( "BoxLang Android: Could not bootstrap Application.bx ({}). Using convention routing.", e.getMessage() );
+		} finally {
+			ctx.shutdown();
+			RequestBoxContext.removeCurrent();
 		}
-		target.mkdirs();
-		copyAssetDir( assets, ASSET_APP_DIR, target );
+	}
+
+	// ── Asset seeding ─────────────────────────────────────────────────────────
+
+	/**
+	 * Recursively copy the APK's {@code bx/} asset payload into {@code appHome}.
+	 * Re-seeds on APK upgrades by comparing the stored versionCode stamp with the
+	 * currently installed version.
+	 */
+	private static void seedFromAssets( Context androidCtx, File appHome ) {
+		long currentVersion = getVersionCode( androidCtx );
+		File stamp          = new File( appHome, VERSION_STAMP );
+
+		if ( stamp.exists() ) {
+			try {
+				long stored = Long.parseLong( new String( java.nio.file.Files.readAllBytes( stamp.toPath() ) ).trim() );
+				if ( stored == currentVersion ) {
+					return;		// already seeded for this APK version
+				}
+				log.info( "BoxLang Android: APK upgraded ({}→{}), re-seeding app home.", stored, currentVersion );
+			} catch ( Exception ignored ) {
+			}
+		}
+
+		appHome.mkdirs();
+		copyAssetDir( androidCtx.getAssets(), ASSET_APP_DIR, appHome );
+
+		try {
+			java.nio.file.Files.writeString( stamp.toPath(), String.valueOf( currentVersion ) );
+		} catch ( Exception e ) {
+			log.warn( "BoxLang Android: Could not write version stamp: {}", e.getMessage() );
+		}
+	}
+
+	@SuppressWarnings( "deprecation" )
+	private static long getVersionCode( Context ctx ) {
+		try {
+			android.content.pm.PackageInfo info = ctx.getPackageManager().getPackageInfo( ctx.getPackageName(), 0 );
+			return android.os.Build.VERSION.SDK_INT >= 28 ? info.getLongVersionCode() : info.versionCode;
+		} catch ( Exception e ) {
+			return 0;
+		}
 	}
 
 	private static void copyAssetDir( AssetManager assets, String assetPath, File target ) {
 		try {
 			String[] children = assets.list( assetPath );
 			if ( children == null || children.length == 0 ) {
-				// It's a file — copy it.
 				copyAssetFile( assets, assetPath, target );
 				return;
 			}

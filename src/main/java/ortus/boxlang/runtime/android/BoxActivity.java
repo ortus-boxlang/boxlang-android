@@ -19,39 +19,46 @@ package ortus.boxlang.runtime.android;
 
 import android.content.Intent;
 import android.content.res.Configuration;
+import android.net.Uri;
 import android.os.Bundle;
 import android.webkit.WebView;
 
 import androidx.appcompat.app.AppCompatActivity;
 
-import ortus.boxlang.runtime.android.mvc.MVCDispatcher;
-import ortus.boxlang.runtime.context.IBoxContext;
-import ortus.boxlang.runtime.context.RequestBoxContext;
-import ortus.boxlang.runtime.context.ScriptingRequestBoxContext;
 import ortus.boxlang.runtime.types.IStruct;
 
 /**
  * The generic, config-driven BoxLang Activity. Apps declare THIS class directly in their
- * manifest (no per-app subclass needed) — all behavior is customized in {@code Application.bx}
- * via its lifecycle hooks and handlers.
+ * manifest (no per-app subclass needed) — all behaviour is customised in {@code Application.bx}
+ * via its lifecycle hooks and route handlers.
  * <p>
- * Hosts the <b>WebView track</b>: it creates a {@link WebView}, builds the MVC front controller,
- * and navigates to the entry route ({@code /} → {@code Main.index}). Views are authored as
- * BoxLang {@code .bxm} templates — no Kotlin, no Compose; the app is 100% BoxLang.
+ * Hosts the <b>WebView track</b>: creates a {@link WebView}, wires up the MVC front
+ * controller through {@link BoxWebViewRenderer}, and navigates to the entry route
+ * ({@code /} by default). Views are authored as BoxLang {@code .bxm} templates — no
+ * Kotlin, no Compose; the app is 100% BoxLang.
  * <p>
- * Every Android lifecycle callback forwards to the matching optional {@code Application.bx}
- * hook through {@link AndroidLifecycleDispatcher}.
+ * Each call to {@link BoxWebViewRenderer#navigate} creates a fresh request context,
+ * fires the full BoxLang request lifecycle, then shuts the context down — no shared
+ * mutable context state leaks across navigations.
+ * <p>
+ * Every Android lifecycle callback is forwarded to the matching optional hook on
+ * {@code Application.bx} through {@link AndroidLifecycleDispatcher}.
+ * <p>
+ * <b>Deep-linking:</b> if the Activity is started with an {@code ACTION_VIEW} intent
+ * the path and query string are extracted from the URI and used as the entry route.
  */
 public class BoxActivity extends AppCompatActivity {
 
-	/**
-	 * The entry route dispatched on create (root → default event).
-	 */
+	/** Bundle key used to save/restore the current route across configuration changes. */
+	private static final String			STATE_ROUTE	= "boxlang.current_route";
+
+	/** The entry route dispatched on first load. Defaults to {@code /}. */
 	protected String					entryRoute	= "/";
 
-	private IBoxContext					context;
 	private AndroidLifecycleDispatcher	lifecycle;
 	private BoxWebViewRenderer			webRenderer;
+
+	// ── Lifecycle ─────────────────────────────────────────────────────────────
 
 	@Override
 	protected void onCreate( Bundle savedInstanceState ) {
@@ -59,24 +66,45 @@ public class BoxActivity extends AppCompatActivity {
 
 		AndroidBoxRuntime android = AndroidBoxRuntime.getInstance();
 
-		// Per-request context, with Application.bx discovered from the app home.
-		this.context	= newRequestContext( android );
-		this.lifecycle	= new AndroidLifecycleDispatcher( this.context );
-
-		// Standard BoxLang lifecycle: onRequestStart, then the Android onActivityCreate hook.
-		fireRequestStart();
+		this.lifecycle	= new AndroidLifecycleDispatcher( android.getRuntime() );
 		this.lifecycle.invokeHook( "onActivityCreate", savedInstanceState );
 
-		// Host the WebView track and navigate to the entry route.
 		WebView webView = new WebView( this );
 		setContentView( webView );
-		MVCDispatcher dispatcher = android.getDispatcher();
-		this.webRenderer = new BoxWebViewRenderer( webView, dispatcher, this.context );
-		this.webRenderer.navigate( this.entryRoute, "GET", null );
+
+		this.webRenderer = new BoxWebViewRenderer( webView, android.getDispatcher(), android.getRuntime() );
+
+		// Restore the route from a previous configuration change, or resolve from intent.
+		String initial = savedInstanceState != null
+		    ? savedInstanceState.getString( STATE_ROUTE, entryRoute )
+		    : resolveEntryRoute();
+
+		this.webRenderer.navigate( initial, "GET", null );
 	}
 
+	@Override
+	protected void onSaveInstanceState( Bundle out ) {
+		super.onSaveInstanceState( out );
+		if ( this.webRenderer != null ) {
+			out.putString( STATE_ROUTE, this.webRenderer.getCurrentRoute() );
+		}
+	}
+
+	@Override
+	protected void onNewIntent( Intent intent ) {
+		super.onNewIntent( intent );
+		setIntent( intent );
+		// Deep-link arriving while the Activity is already running (singleTop / singleTask).
+		String route = routeFromIntent( intent );
+		if ( route != null && this.webRenderer != null ) {
+			this.webRenderer.navigate( route, "GET", null );
+		}
+	}
+
+	// ── Public navigation API ─────────────────────────────────────────────────
+
 	/**
-	 * Navigate the WebView track to a route.
+	 * Navigate the WebView track to a route programmatically.
 	 *
 	 * @param path   The route path
 	 * @param method The HTTP method
@@ -88,18 +116,7 @@ public class BoxActivity extends AppCompatActivity {
 		}
 	}
 
-	private IBoxContext newRequestContext( AndroidBoxRuntime android ) {
-		// A request context that loads the app descriptor (Application.bx) from the app home.
-		ScriptingRequestBoxContext ctx = new ScriptingRequestBoxContext( android.getRuntime().getRuntimeContext(), true );
-		return ctx;
-	}
-
-	private void fireRequestStart() {
-		RequestBoxContext rc = this.context.getParentOfType( RequestBoxContext.class );
-		rc.getApplicationListener().onRequestStart( this.context, new Object[] { this.entryRoute } );
-	}
-
-	// ---- Android lifecycle -> Application.bx hooks ----
+	// ── Android lifecycle → Application.bx hooks ─────────────────────────────
 
 	@Override
 	protected void onStart() {
@@ -128,8 +145,6 @@ public class BoxActivity extends AppCompatActivity {
 	@Override
 	protected void onDestroy() {
 		this.lifecycle.invokeHook( "onActivityDestroy" );
-		RequestBoxContext rc = this.context.getParentOfType( RequestBoxContext.class );
-		rc.getApplicationListener().onRequestEnd( this.context, new Object[] {} );
 		super.onDestroy();
 	}
 
@@ -148,9 +163,14 @@ public class BoxActivity extends AppCompatActivity {
 	@Override
 	@SuppressWarnings( "deprecation" )
 	public void onBackPressed() {
-		// A hook returning boolean false consumes the back press.
+		// Let Application.bx consume the event first (return false to consume).
 		Object handled = this.lifecycle.invokeHook( "onBackPressed" );
-		if ( !Boolean.FALSE.equals( handled ) ) {
+		if ( Boolean.FALSE.equals( handled ) ) return;
+
+		// Navigate back within the WebView before popping the Activity stack.
+		if ( this.webRenderer != null && this.webRenderer.canGoBack() ) {
+			this.webRenderer.goBack();
+		} else {
 			super.onBackPressed();
 		}
 	}
@@ -165,5 +185,29 @@ public class BoxActivity extends AppCompatActivity {
 	public void onLowMemory() {
 		super.onLowMemory();
 		this.lifecycle.invokeHook( "onLowMemory" );
+	}
+
+	// ── Helpers ───────────────────────────────────────────────────────────────
+
+	/**
+	 * Determine the entry route for this launch. Returns the path+query from an
+	 * {@code ACTION_VIEW} deep-link intent if present, otherwise the default
+	 * {@link #entryRoute} ({@code /}).
+	 */
+	private String resolveEntryRoute() {
+		String route = routeFromIntent( getIntent() );
+		return route != null ? route : entryRoute;
+	}
+
+	private static String routeFromIntent( Intent intent ) {
+		if ( intent == null || !Intent.ACTION_VIEW.equals( intent.getAction() ) ) {
+			return null;
+		}
+		Uri uri = intent.getData();
+		if ( uri == null ) return null;
+		String path  = uri.getPath();
+		String query = uri.getQuery();
+		if ( path == null || path.isEmpty() ) return "/";
+		return query != null && !query.isEmpty() ? path + "?" + query : path;
 	}
 }

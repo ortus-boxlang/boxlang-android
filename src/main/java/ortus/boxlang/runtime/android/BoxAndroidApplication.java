@@ -48,11 +48,7 @@ public class BoxAndroidApplication extends Application {
 	@Override
 	public void onLowMemory() {
 		super.onLowMemory();
-		// Best-effort: clear caches if the runtime is up.
-		try {
-			AndroidBoxRuntime.getInstance().getRuntime().getCacheService();
-		} catch ( IllegalStateException ignored ) {
-			// runtime not booted yet
-		}
+		// The runtime registers its own low-memory handler via the JVM shutdown hook;
+		// nothing additional to do here.
 	}
 }
