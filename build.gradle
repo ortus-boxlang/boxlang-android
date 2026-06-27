@@ -1,25 +1,22 @@
 /**
- * BoxLang Android Runtime — AGP library module (publishes an .aar).
+ * BoxLang Android Runtime — AAR library.
  *
- * This module contains the Android-SPECIFIC glue for running BoxLang on Android:
- * the runtime bootstrap, the generic manifest-declared Application/Activity, the WebView
- * renderer + JS bridge, and the Android lifecycle -> Application.bx hook dispatcher. The
- * portable, Android-free MVC framework lives in :runtimes:android-mvc and is consumed here.
+ * Contains the Android-specific runtime glue (bootstrap, Application/Activity, WebView
+ * renderer, lifecycle dispatcher) AND the portable front-controller MVC framework (Router,
+ * RoutingService, MVCDispatcher, ViewRenderer, AOT pipeline).
  *
- * 100% Java — no Kotlin. The UI is the WebView track: BoxLang .bxm templates rendered to
- * HTML and loaded into a WebView.
+ * 100% Java — no Kotlin. The UI track is a WebView: BoxLang .bxm templates rendered to HTML
+ * and loaded into a WebView via BoxWebViewRenderer.
  *
- * Requires the Android SDK + Android Gradle Plugin. settings.gradle only includes this
- * module when ANDROID_HOME / ANDROID_SDK_ROOT is present, so the core BoxLang build and
- * CI never need the Android toolchain.
- *
- * NOTE: on-device, BoxLang runs in AHEAD-OF-TIME mode (NoOp compiler) because ART cannot
- * defineClass() raw JVM bytecode at runtime. .bx/.bxm sources are compiled to .class by
- * BXCompiler at build time (see the consuming app's compileBoxLangAot task) and dexed
- * into the APK by D8/R8.
+ * BoxLang core is NOT bundled in the AAR — it is declared compileOnly so the consuming app
+ * provides it (typically the slim NoOp distribution, since ART cannot defineClass() raw JVM
+ * bytecode at runtime). Run `./gradlew downloadBoxLang` (or let preBuild do it) to pull the
+ * snapshot JAR before compiling.
  */
 plugins {
-	id 'com.android.library'
+	id 'com.android.library' version '8.7.3'
+	id 'de.undercouch.download' version '5.7.0'
+	id 'de.mannodermaus.android-junit5' version '1.10.0.0'
 }
 
 repositories {
@@ -32,14 +29,14 @@ android {
 	compileSdk 35
 
 	defaultConfig {
-		minSdk 26					// InMemoryDexClassLoader (hot reload) requires API 26+
+		minSdk 26					// InMemoryDexClassLoader (hot-reload) requires API 26+
 		consumerProguardFiles 'consumer-rules.pro'
 	}
 
 	compileOptions {
 		sourceCompatibility JavaVersion.VERSION_17
 		targetCompatibility JavaVersion.VERSION_17
-		// Library desugaring lets D8/R8 dex the Java 17/21 APIs BoxLang core uses.
+		// Library desugaring lets D8/R8 dex Java 17/21 APIs BoxLang core uses.
 		coreLibraryDesugaringEnabled true
 	}
 
@@ -53,39 +50,58 @@ android {
 	testOptions {
 		unitTests {
 			includeAndroidResources = true
-			returnDefaultValues = true
+			returnDefaultValues  = true
 		}
 	}
 }
 
-dependencies {
-	// Portable MVC framework (pure JVM, no Android deps)
-	api project( ':runtimes:android-mvc' )
+// ─── BoxLang JAR (downloaded before compilation) ──────────────────────────────
 
-	// BoxLang runtime — on a real build this is the slim NoOp distribution.
-	// Within this repo we depend on the core project; a standalone repo would use
-	// e.g. implementation "io.boxlang:boxlang:${boxlangVersion}".
-	//
-	// On device BoxLang runs AHEAD-OF-TIME (NoOp): it loads pre-compiled classes and never
-	// parses .bx/.bxm source, so the entire parser toolchain is dead weight in the APK. Drop
-	// ANTLR (runtime + grammars), JavaParser, and JavaParser's transitive Guava/Javassist —
-	// the same families the NoOp distribution jar excludes — to slim what D8 has to dex.
-	api ( project( ':' ) ) {
-		exclude group: 'org.antlr'
-		exclude group: 'com.github.javaparser'
-		exclude group: 'com.google.guava'
-		exclude group: 'org.javassist'
-	}
+def boxlangJar = file( "libs/boxlang-${boxlangVersion}.jar" )
+
+dependencies {
+	// BoxLang core — provided by the consumer (NoOp slim distribution on device).
+	// compileOnly keeps it out of the AAR; testImplementation makes it available for unit tests.
+	compileOnly files( boxlangJar )
+	testImplementation files( boxlangJar )
 
 	// Java 8+ API desugaring for ART
 	coreLibraryDesugaring 'com.android.tools:desugar_jdk_libs:2.0.4'
 
-	// AndroidX (Java-only; no Kotlin/Compose)
+	// SLF4J API (used by the MVC / AOT layer)
+	implementation 'org.slf4j:slf4j-api:2.0.18'
+
+	// ASM — BoxClassExtractor reads class internal names from AOT output
+	implementation 'org.ow2.asm:asm:9.9.1'
+
+	// AndroidX
 	implementation 'androidx.appcompat:appcompat:1.7.0'
 
-	// Unit tests (Robolectric runs Android framework classes on the JVM)
+	// ── Unit tests ────────────────────────────────────────────────────────────
+	// JUnit 4 + Robolectric for Android-specific tests
 	testImplementation 'junit:junit:4.13.2'
 	testImplementation 'org.robolectric:robolectric:4.13'
 	testImplementation 'androidx.test:core:1.6.1'
-	testImplementation 'com.google.truth:truth:1.4.4'
+
+	// JUnit 5 for the pure-JVM MVC / AOT tests (via android-junit5 plugin)
+	testImplementation "org.junit.jupiter:junit-jupiter:6.+"
+	testImplementation "org.mockito:mockito-core:5.+"
+	testImplementation "com.google.truth:truth:1.4.4"
+	testRuntimeOnly "org.junit.platform:junit-platform-launcher"
+	testRuntimeOnly 'ch.qos.logback:logback-classic:1.5.32'
 }
+
+// ─── Download task ────────────────────────────────────────────────────────────
+
+task downloadBoxLang( type: Download ) {
+	doFirst {
+		file( "libs" ).mkdirs()
+	}
+	src "https://downloads.ortussolutions.com/ortussolutions/boxlang/${boxlangVersion}/boxlang-${boxlangVersion}.jar"
+	dest file( "libs/boxlang-${boxlangVersion}.jar" )
+	overwrite true
+	onlyIfModified true
+}
+
+// Ensure BoxLang is present before any compilation or test task runs.
+preBuild.dependsOn downloadBoxLang

@@ -1,0 +1,14 @@
+# Gradle build outputs
+build/
+.gradle/
+
+# Downloaded BoxLang runtime JARs (fetched by downloadBoxLang task)
+libs/
+
+# Android Studio
+*.iml
+.idea/
+local.properties
+
+# OS
+.DS_Store
