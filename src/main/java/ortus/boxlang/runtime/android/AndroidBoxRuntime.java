@@ -123,7 +123,16 @@ public final class AndroidBoxRuntime {
 		) );
 
 		// 6. Build the MVC stack.
-		RoutingService	routingService	= new RoutingService();
+		// Register the RoutingService as a BoxLang global service so:
+		//   (a) BoxLang scripts can call getService('RoutingService') / getRouter()
+		//   (b) The runtime fires onShutdown() automatically on process exit.
+		// The runtime is already fully started at this point, so we fire the
+		// configuration and startup hooks manually before registering.
+		RoutingService routingService = new RoutingService();
+		routingService.onConfigurationLoad();
+		routingService.onStartup();
+		runtime.putGlobalService( RoutingService.NAME, routingService );
+
 		ViewRenderer	viewRenderer	= new ViewRenderer(
 		    runtime,
 		    new File( appHome, "views" ).getAbsolutePath(),

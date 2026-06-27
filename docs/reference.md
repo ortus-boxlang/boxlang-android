@@ -38,7 +38,17 @@ Resolution order: root → explicit table → **convention** (`/handler/action` 
 `Handler.action`, `/handler` → `Handler.index`).
 
 ### `RoutingService` (IService)
-Owns the singleton `Router`. Registered like any BoxLang service via the runtime.
+Owns the singleton `Router`. Registered as a BoxLang global service so it participates in the
+runtime lifecycle and is reachable from BoxLang scripts:
+
+```java
+// Inside any handler or Application.bx:
+var routingService = getBoxRuntime().getGlobalService( "RoutingService" );
+var router         = routingService.getRouter();
+```
+
+The service lifecycle (`onConfigurationLoad`, `onStartup`, `onShutdown`) is managed by the
+runtime — `onShutdown` is called automatically when the runtime shuts down.
 
 ### `MVCEvent` — the `event` object passed to every handler action
 

@@ -137,8 +137,14 @@ public class BoxLangSimulator {
 		) );
 
 		// Build the MVC stack pointing at the app's views and layouts.
-		RoutingService	routingService	= new RoutingService();
-		ViewRenderer	viewRenderer	= new ViewRenderer(
+		// Register RoutingService as a BoxLang global service so scripts can call
+		// getService('RoutingService') and the runtime fires onShutdown() automatically.
+		RoutingService routingService = new RoutingService();
+		routingService.onConfigurationLoad();
+		routingService.onStartup();
+		this.runtime.putGlobalService( RoutingService.NAME, routingService );
+
+		ViewRenderer viewRenderer = new ViewRenderer(
 		    this.runtime,
 		    this.appPath + "/views",
 		    this.appPath + "/layouts"
