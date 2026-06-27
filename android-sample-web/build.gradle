@@ -1,0 +1,138 @@
+/**
+ * BoxLang Android — WebView sample app (Track 2, front-controller MVC).
+ *
+ * This is BOTH a runnable sample and the copy-to-start template. The entire app is
+ * BoxLang under src/main/bx (zero Kotlin/Java); the manifest points at the library's
+ * generic BoxAndroidApplication / BoxActivity.
+ *
+ * Requires the Android SDK (settings.gradle only includes it when ANDROID_HOME is set).
+ */
+plugins {
+	id 'com.android.application'
+}
+
+repositories {
+	google()
+	mavenCentral()
+}
+
+android {
+	namespace 'com.example.boxweb'
+	compileSdk 35
+
+	defaultConfig {
+		applicationId 'com.example.boxweb'
+		minSdk 26
+		targetSdk 35
+		versionCode 1
+		versionName '1.0'
+	}
+
+	compileOptions {
+		sourceCompatibility JavaVersion.VERSION_17
+		targetCompatibility JavaVersion.VERSION_17
+		coreLibraryDesugaringEnabled true
+	}
+
+	// Ship the BoxLang app payload (src/main/bx) inside the APK so the runtime can read
+	// .bx/.bxm/boxlang.json on device. It is mirrored under assets/bx at build time.
+	sourceSets {
+		main {
+			assets.srcDirs += [ "${buildDir}/boxapp-assets" ]
+		}
+	}
+
+	buildTypes {
+		release {
+			minifyEnabled true
+			proguardFiles getDefaultProguardFile( 'proguard-android-optimize.txt' ), 'proguard-rules.pro'
+		}
+	}
+
+	// The full BoxLang core (and its deps like logback) carry duplicate META-INF entries;
+	// drop the ones that collide when merged into a single APK.
+	packaging {
+		resources {
+			excludes += [
+				'META-INF/INDEX.LIST',
+				'META-INF/DEPENDENCIES',
+				'META-INF/LICENSE*',
+				'META-INF/NOTICE*',
+				'META-INF/*.SF',
+				'META-INF/*.DSA',
+				'META-INF/*.RSA',
+				'META-INF/versions/**',
+				'**/module-info.class'
+			]
+			pickFirsts += [ 'META-INF/services/**' ]
+		}
+	}
+}
+
+dependencies {
+	implementation project( ':runtimes:android' )
+	coreLibraryDesugaring 'com.android.tools:desugar_jdk_libs:2.0.4'
+
+	// The AOT-compiled BoxLang app classes (boxgenerated.*), packaged as a jar so AGP's
+	// own D8 dexes them into the APK alongside the runtime. `builtBy` chains the AOT
+	// pipeline (compileBoxLangAot -> extractBoxLangClasses -> jarBoxLangAot) ahead of dexing.
+	implementation files( "${buildDir}/boxapp-aot/boxlang-aot.jar" ) {
+		builtBy 'jarBoxLangAot'
+	}
+}
+
+/**
+ * Mirror the BoxLang app payload into an assets dir packaged into the APK.
+ */
+tasks.register( 'stageBoxApp', Copy ) {
+	from 'src/main/bx'
+	into "${buildDir}/boxapp-assets/bx"
+}
+
+/**
+ * Step 1 of AOT: compile the BoxLang sources to the BoxLang class container format.
+ *
+ * Android execution model: ART cannot defineClass() raw bytecode at runtime, so the
+ * compiled classes must be DEXED into the APK and resolved by the app class loader
+ * (PreloadedBoxpiler / PreloadedClassLoader — no runtime defineClass).
+ */
+tasks.register( 'compileBoxLangAot', JavaExec ) {
+	group		= 'boxlang'
+	description	= 'Pre-compiles src/main/bx (.bx/.bxm) to the BoxLang class container.'
+	classpath	= project( ':' ).sourceSets.main.runtimeClasspath
+	mainClass	= 'ortus.boxlang.compiler.BXCompiler'
+	args		= [ '--source', "${projectDir}/src/main/bx", '--target', "${buildDir}/boxapp-containers", '--stopOnError' ]
+}
+
+/**
+ * Step 2 of AOT: extract the containers into individual .class files so AGP's D8/R8 dexes
+ * them into the APK. The output dir is added to the app's compiled classes.
+ */
+tasks.register( 'extractBoxLangClasses', JavaExec ) {
+	group		= 'boxlang'
+	description	= 'Extracts AOT containers into standard .class files for D8/R8.'
+	dependsOn 'compileBoxLangAot'
+	classpath	= project( ':runtimes:android-mvc' ).sourceSets.main.runtimeClasspath + files( project( ':runtimes:android-mvc' ).sourceSets.main.output )
+	mainClass	= 'ortus.boxlang.runtime.android.aot.BoxClassExtractor'
+	args		= [ "${buildDir}/boxapp-containers", "${buildDir}/boxapp-dexable" ]
+}
+
+/**
+ * Step 3 of AOT: package the extracted .class files into a jar. It is wired into the app's
+ * `implementation` classpath above, so AGP runs its standard D8 over it and the compiled
+ * BoxLang (boxgenerated.*) ends up in the APK's dex — no manual d8 invocation or dex
+ * merging required (AGP owns dexing, multidex, and packaging).
+ */
+tasks.register( 'jarBoxLangAot', Jar ) {
+	group				= 'boxlang'
+	description			= 'Packages the extracted AOT .class files into a jar for AGP/D8 to dex into the APK.'
+	dependsOn 'extractBoxLangClasses'
+	archiveFileName		= 'boxlang-aot.jar'
+	destinationDirectory	= file( "${buildDir}/boxapp-aot" )
+	from "${buildDir}/boxapp-dexable"
+}
+
+// Stage the app payload before assembling; AOT runs as part of the BoxLang build chain.
+tasks.matching { it.name.startsWith( 'merge' ) && it.name.endsWith( 'Assets' ) }.configureEach {
+	dependsOn 'stageBoxApp'
+}
