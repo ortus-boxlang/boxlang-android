@@ -17,12 +17,15 @@
  */
 package ortus.boxlang.runtime.android.simulator;
 
+import java.io.File;
 import java.io.IOException;
 import java.io.OutputStream;
 import java.net.InetSocketAddress;
 import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
 import java.nio.file.Paths;
+import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.Map;
 
@@ -68,7 +71,34 @@ import ortus.boxlang.runtime.types.Struct;
  */
 public class BoxLangSimulator {
 
-	private static final Logger	log	= LoggerFactory.getLogger( BoxLangSimulator.class );
+	private static final Logger				log			= LoggerFactory.getLogger( BoxLangSimulator.class );
+
+	/** MIME types for static file serving from {@code <appPath>/public/}. */
+	private static final Map<String, String>	MIME_TYPES;
+
+	static {
+		Map<String, String> m = new LinkedHashMap<>();
+		m.put( "css",   "text/css" );
+		m.put( "js",    "application/javascript" );
+		m.put( "mjs",   "application/javascript" );
+		m.put( "html",  "text/html; charset=UTF-8" );
+		m.put( "htm",   "text/html; charset=UTF-8" );
+		m.put( "txt",   "text/plain" );
+		m.put( "json",  "application/json" );
+		m.put( "xml",   "application/xml" );
+		m.put( "png",   "image/png" );
+		m.put( "jpg",   "image/jpeg" );
+		m.put( "jpeg",  "image/jpeg" );
+		m.put( "gif",   "image/gif" );
+		m.put( "svg",   "image/svg+xml" );
+		m.put( "ico",   "image/x-icon" );
+		m.put( "woff",  "font/woff" );
+		m.put( "woff2", "font/woff2" );
+		m.put( "ttf",   "font/ttf" );
+		m.put( "otf",   "font/otf" );
+		m.put( "webp",  "image/webp" );
+		MIME_TYPES = Collections.unmodifiableMap( m );
+	}
 
 	private final String		appPath;
 	private final int			port;
@@ -182,6 +212,25 @@ public class BoxLangSimulator {
 		String method = exchange.getRequestMethod().toUpperCase();
 		String uri    = exchange.getRequestURI().toString();
 
+		// ── Static file serving ───────────────────────────────────────────────
+		// Files under <appPath>/public/ are served directly without going through
+		// the MVC dispatcher. The canonical-path check prevents path traversal.
+		File publicDir = new File( this.appPath, "public" );
+		if ( publicDir.isDirectory() ) {
+			String filePath = uri.contains( "?" ) ? uri.substring( 0, uri.indexOf( '?' ) ) : uri;
+			try {
+				File publicCanon   = publicDir.getCanonicalFile();
+				File requestedFile = new File( publicDir, filePath ).getCanonicalFile();
+				if ( requestedFile.toPath().startsWith( publicCanon.toPath() ) && requestedFile.isFile() ) {
+					serveStaticFile( exchange, requestedFile );
+					exchange.close();
+					return;
+				}
+			} catch ( IOException ignored ) {
+				// fall through to MVC dispatch
+			}
+		}
+
 		// Parse POST form params from the request body.
 		IStruct params = null;
 		if ( "POST".equals( method ) ) {
@@ -230,6 +279,20 @@ public class BoxLangSimulator {
 			RequestBoxContext.removeCurrent();
 			exchange.close();
 		}
+	}
+
+	private static void serveStaticFile( HttpExchange exchange, File file ) throws IOException {
+		String	name	= file.getName();
+		int		dot		= name.lastIndexOf( '.' );
+		String	ext		= dot >= 0 ? name.substring( dot + 1 ).toLowerCase() : "";
+		String	mime	= MIME_TYPES.getOrDefault( ext, "application/octet-stream" );
+		byte[]	bytes	= Files.readAllBytes( file.toPath() );
+		exchange.getResponseHeaders().set( "Content-Type", mime );
+		exchange.sendResponseHeaders( 200, bytes.length );
+		try ( OutputStream out = exchange.getResponseBody() ) {
+			out.write( bytes );
+		}
+		log.debug( "Static  {} → 200 ({} bytes, {})", file.getName(), bytes.length, mime );
 	}
 
 	private static void sendError( HttpExchange exchange, Exception e ) throws IOException {

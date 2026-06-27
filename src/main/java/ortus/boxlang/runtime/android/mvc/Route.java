@@ -17,6 +17,8 @@
  */
 package ortus.boxlang.runtime.android.mvc;
 
+import java.net.URLEncoder;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.LinkedHashMap;
@@ -165,6 +167,46 @@ public class Route {
 			params.put( this.paramNames.get( i ), m.group( i + 1 ) );
 		}
 		return new RouteMatch( this.handler, this.action, params, this );
+	}
+
+	/**
+	 * Build a concrete URL from this route's pattern by filling named placeholders from
+	 * {@code params}. Any params not consumed by a placeholder are appended as a query string.
+	 * Placeholder values are percent-encoded (path-safe: spaces become {@code %20}, not {@code +}).
+	 *
+	 * @param params The parameter map (key → string value; may be {@code null})
+	 *
+	 * @return The concrete URL
+	 */
+	String buildUrl( Map<String, String> params ) {
+		Map<String, String> remaining = params == null ? new LinkedHashMap<>() : new LinkedHashMap<>( params );
+
+		// Replace :placeholder segments, consuming matched keys from `remaining`.
+		Matcher		m	= PLACEHOLDER.matcher( this.uriPattern );
+		StringBuffer sb	= new StringBuffer();
+		while ( m.find() ) {
+			String	key	= m.group( 1 );
+			String	val	= remaining.remove( key );
+			m.appendReplacement( sb, val != null
+			    ? Matcher.quoteReplacement( URLEncoder.encode( val, StandardCharsets.UTF_8 ).replace( "+", "%20" ) )
+			    : Matcher.quoteReplacement( m.group( 0 ) ) );
+		}
+		m.appendTail( sb );
+
+		// Append leftover params as a query string.
+		if ( remaining.isEmpty() ) {
+			return sb.toString();
+		}
+		sb.append( '?' );
+		boolean first = true;
+		for ( Map.Entry<String, String> entry : remaining.entrySet() ) {
+			if ( !first ) sb.append( '&' );
+			sb.append( URLEncoder.encode( entry.getKey(), StandardCharsets.UTF_8 ) );
+			sb.append( '=' );
+			sb.append( URLEncoder.encode( entry.getValue(), StandardCharsets.UTF_8 ) );
+			first = false;
+		}
+		return sb.toString();
 	}
 
 	/**

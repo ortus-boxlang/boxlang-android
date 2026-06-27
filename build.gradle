@@ -54,6 +54,14 @@ android {
 			returnDefaultValues  = true
 		}
 	}
+
+	// Explicitly declare which variant is published so that AGP's ModuleArchiver
+	// and the maven-publish plugin have an unambiguous task ordering at all times.
+	publishing {
+		singleVariant( 'release' ) {
+			withSourcesJar()
+		}
+	}
 }
 
 // ─── BoxLang JAR (downloaded before compilation) ──────────────────────────────

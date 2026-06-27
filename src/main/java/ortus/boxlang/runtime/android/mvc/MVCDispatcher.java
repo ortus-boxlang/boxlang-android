@@ -119,15 +119,28 @@ public class MVCDispatcher {
 
 		MVCEvent event = new MVCEvent( rc, method );
 		event.setCurrentEvent( match.getEvent() );
+		event.setRouter( this.routingService.getRouter() );
 
-		// 3. Run the handler action FIRST.
+		// 3. Load handler then run the interceptor chain + action.
 		IClassRunnable handler = loadHandler( context, match.getHandler() );
+
+		// preHandler → pre<Action> → action → post<Action> → postHandler
+		// Each step that calls event.relocate() short-circuits the rest.
+		invokeIfDefined( handler, context, "preHandler", buildArgs( event ) );
+		if ( event.isRelocating() ) return DispatchResult.relocate( event.getRelocateTarget() );
+
+		invokeIfDefined( handler, context, "pre" + capitalize( match.getAction() ), buildArgs( event ) );
+		if ( event.isRelocating() ) return DispatchResult.relocate( event.getRelocateTarget() );
+
 		handler.dereferenceAndInvoke( context, Key.of( match.getAction() ), buildArgs( event ), false );
 
 		// 4a. Relocate short-circuits rendering.
 		if ( event.isRelocating() ) {
 			return DispatchResult.relocate( event.getRelocateTarget() );
 		}
+
+		invokeIfDefined( handler, context, "post" + capitalize( match.getAction() ), buildArgs( event ) );
+		invokeIfDefined( handler, context, "postHandler", buildArgs( event ) );
 
 		// 4b. Apply the implicit view convention if the action did not set one.
 		if ( event.getView() == null ) {
@@ -217,5 +230,26 @@ public class MVCDispatcher {
 	 */
 	String implicitView( RouteMatch match ) {
 		return match.getHandler().toLowerCase() + "/" + match.getAction();
+	}
+
+	/**
+	 * Invoke {@code method} on {@code handler} if the handler defines it; no-op otherwise.
+	 * Used to call pre/post interceptors without requiring every handler to implement them.
+	 *
+	 * @param handler The handler instance
+	 * @param context The request context
+	 * @param method  The method name to look up
+	 * @param args    The arguments to pass
+	 */
+	private void invokeIfDefined( IClassRunnable handler, IBoxContext context, String method, Map<Key, Object> args ) {
+		Key key = Key.of( method );
+		if ( handler.getThisScope().containsKey( key ) ) {
+			handler.dereferenceAndInvoke( context, key, args, false );
+		}
+	}
+
+	private static String capitalize( String s ) {
+		if ( s == null || s.isEmpty() ) return s;
+		return Character.toUpperCase( s.charAt( 0 ) ) + s.substring( 1 );
 	}
 }

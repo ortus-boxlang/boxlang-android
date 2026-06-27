@@ -67,6 +67,23 @@ event.isRelocating()
 event.getRelocateTarget()
 ```
 
+**Reverse URL lookup — `buildLink`:**
+```java
+// By named route (registered with .withName("items"))
+event.buildLink( "items" )                    // → "/items"
+event.buildLink( "item.show", {id: 42} )      // → "/items/42"  (fills :id placeholder)
+
+// By Handler.action convention (no named route needed)
+event.buildLink( "Items.show" )               // → "/items/show"
+event.buildLink( "Items.show", {page: 2} )    // → "/items/show?page=2"
+
+// Raw path passthrough
+event.buildLink( "/about" )                   // → "/about"
+```
+
+Named route params that match a `:placeholder` in the pattern are consumed as path segments.
+Any leftover params become a query string (`?key=value`). Values are percent-encoded.
+
 **Meta:**
 ```java
 event.getHTTPMethod()    // "GET" or "POST"
@@ -80,9 +97,39 @@ event.getCurrentEvent()  // resolved "Handler.action" string
 ### `MVCDispatcher`
 `dispatch(context, path, method, params)` → `DispatchResult`
 
-Flow: parse query string → resolve route → build `rc` → **run handler action first** →
-relocate or render view-in-layout. The action receives `event`, `rc`, and every `rc` entry
-spread as named arguments.
+**Request flow (per dispatch):**
+1. Parse query string → resolve route → build `rc`
+2. `preHandler(event, rc)` — optional method on the handler; runs before any action
+3. `pre<Action>(event, rc)` — e.g. `preShow`, `preAdd`; action-specific pre-hook
+4. **Handler action** — receives `event`, `rc`, and each `rc` entry as a named argument
+5. `post<Action>(event, rc)` — e.g. `postShow`; action-specific post-hook
+6. `postHandler(event, rc)` — runs after any action
+7. Relocate or render view-in-layout
+
+Any interceptor (step 2, 3) can call `event.relocate(target)` to short-circuit the rest of
+the chain — the action and post-hooks are skipped and the relocate is returned immediately.
+
+**Handler interceptors example:**
+```java
+// handlers/Main.bx
+class {
+    // Runs before every action in this handler
+    function preHandler( event, rc ) {
+        if ( !application.loggedIn ) {
+            event.relocate( "/login" );
+        }
+    }
+
+    // Runs only before the `dashboard` action
+    function preDashboard( event, rc ) {
+        rc.title = "Dashboard";
+    }
+
+    function dashboard( event, rc ) {
+        event.setView( "main/dashboard" );
+    }
+}
+```
 
 ### `ViewRenderer`
 `render(context, event)` — renders the chosen view (under `viewsRoot`), wraps it in the
@@ -138,8 +185,31 @@ src/main/bx/
 ├─ layouts/                # .bxm layout wrappers
 ├─ models/                 # app services and domain objects
 ├─ modules/                # drop-in BoxLang modules (auto-registered)
+├─ public/                 # static assets (CSS, JS, images, fonts)
 └─ lib/                    # third-party JARs (dexed at build time on Android)
 ```
+
+### Static asset serving (simulator only)
+
+The simulator serves files placed under `src/main/bx/public/` **before** attempting MVC
+dispatch. A request for `/public/style.css` is unnecessary — just reference the path directly:
+
+```html
+<link rel="stylesheet" href="/css/app.css">
+```
+
+resolves to `<appPath>/public/css/app.css`.
+
+Supported MIME types are detected from the file extension: `css`, `js`, `mjs`, `html`,
+`json`, `xml`, `png`, `jpg`, `gif`, `svg`, `ico`, `woff`, `woff2`, `ttf`, `otf`, `webp`.
+Unknown extensions are served as `application/octet-stream`.
+
+A canonical-path check prevents path-traversal attacks (requests cannot escape `public/`).
+
+> **On-device:** the WebView loads HTML into a sandboxed origin (`https://boxlang.local/`),
+> so inline CSS/JS or `data:` URIs are the easiest approach for on-device styling. If you need
+> separate asset files on device, bundle them in `assets/` and serve them via a
+> `WebViewAssetLoader` or embed them inside your layout template.
 
 ---
 
