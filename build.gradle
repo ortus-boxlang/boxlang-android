@@ -17,6 +17,7 @@ plugins {
 	id 'com.android.library' version '8.7.3'
 	id 'de.undercouch.download' version '5.7.0'
 	id 'de.mannodermaus.android-junit5' version '1.10.0.0'
+	id 'maven-publish'
 }
 
 repositories {
@@ -105,3 +106,24 @@ task downloadBoxLang( type: Download ) {
 
 // Ensure BoxLang is present before any compilation or test task runs.
 preBuild.dependsOn downloadBoxLang
+
+// ─── AAR Publication ──────────────────────────────────────────────────────────
+
+afterEvaluate {
+	publishing {
+		publications {
+			release( MavenPublication ) {
+				from components.release
+				groupId    = project.group
+				artifactId = 'boxlang-android'
+				version    = project.version
+			}
+		}
+		repositories {
+			maven {
+				name = 'localRepo'
+				url  = layout.buildDirectory.dir( 'repo' )
+			}
+		}
+	}
+}

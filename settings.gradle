@@ -6,11 +6,12 @@ pluginManagement {
 	}
 }
 
-dependencyResolutionManagement {
-	repositories {
-		google()
-		mavenCentral()
-	}
-}
-
 rootProject.name = 'boxlang-android'
+
+// The simulator runs on plain JVM — no Android SDK required.
+include ':simulator'
+
+// The sample Android app requires the Android SDK (ANDROID_HOME or ANDROID_SDK_ROOT).
+if ( System.getenv( 'ANDROID_HOME' ) || System.getenv( 'ANDROID_SDK_ROOT' ) ) {
+	include ':android-sample-web'
+}

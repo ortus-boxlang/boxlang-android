@@ -70,7 +70,7 @@ android {
 }
 
 dependencies {
-	implementation project( ':runtimes:android' )
+	implementation project( ':' )
 	coreLibraryDesugaring 'com.android.tools:desugar_jdk_libs:2.0.4'
 
 	// The AOT-compiled BoxLang app classes (boxgenerated.*), packaged as a jar so AGP's
@@ -99,7 +99,8 @@ tasks.register( 'stageBoxApp', Copy ) {
 tasks.register( 'compileBoxLangAot', JavaExec ) {
 	group		= 'boxlang'
 	description	= 'Pre-compiles src/main/bx (.bx/.bxm) to the BoxLang class container.'
-	classpath	= project( ':' ).sourceSets.main.runtimeClasspath
+	dependsOn	':downloadBoxLang'
+	classpath	= files( rootProject.file( "libs/boxlang-${boxlangVersion}.jar" ) )
 	mainClass	= 'ortus.boxlang.compiler.BXCompiler'
 	args		= [ '--source', "${projectDir}/src/main/bx", '--target', "${buildDir}/boxapp-containers", '--stopOnError' ]
 }
@@ -111,8 +112,8 @@ tasks.register( 'compileBoxLangAot', JavaExec ) {
 tasks.register( 'extractBoxLangClasses', JavaExec ) {
 	group		= 'boxlang'
 	description	= 'Extracts AOT containers into standard .class files for D8/R8.'
-	dependsOn 'compileBoxLangAot'
-	classpath	= project( ':runtimes:android-mvc' ).sourceSets.main.runtimeClasspath + files( project( ':runtimes:android-mvc' ).sourceSets.main.output )
+	dependsOn	'compileBoxLangAot', ':simulator:classes'
+	classpath	= project( ':simulator' ).sourceSets.main.runtimeClasspath
 	mainClass	= 'ortus.boxlang.runtime.android.aot.BoxClassExtractor'
 	args		= [ "${buildDir}/boxapp-containers", "${buildDir}/boxapp-dexable" ]
 }

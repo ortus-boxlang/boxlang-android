@@ -1,0 +1,57 @@
+/**
+ * BoxLang Android Simulator — plain-JVM development server.
+ *
+ * Starts an embedded HTTP server that dispatches requests through the same MVC stack
+ * (MVCDispatcher / ViewRenderer / Router) used on the device.  Developers can iterate
+ * on BoxLang templates and handler logic without Android Studio or a physical device.
+ *
+ * Usage:
+ *   ./gradlew :simulator:run --args="--app ../android-sample-web/src/main/bx --port 8085"
+ *
+ * The non-Android MVC and AOT source packages (aot/*, mvc/*) are compiled directly from
+ * the library's src/main/java tree — no code duplication and no Android SDK required.
+ */
+plugins {
+	id 'application'
+	id 'de.undercouch.download' version '5.7.0'
+}
+
+repositories {
+	mavenCentral()
+}
+
+def boxlangJar = rootProject.file( "libs/boxlang-${boxlangVersion}.jar" )
+
+dependencies {
+	implementation files( boxlangJar )
+	implementation 'org.slf4j:slf4j-api:2.0.18'
+	implementation 'org.ow2.asm:asm:9.9.1'
+	runtimeOnly 'ch.qos.logback:logback-classic:1.5.32'
+}
+
+application {
+	mainClass = 'ortus.boxlang.runtime.android.simulator.BoxLangSimulator'
+}
+
+java {
+	sourceCompatibility = JavaVersion.toVersion( jdkVersion )
+	targetCompatibility = JavaVersion.toVersion( jdkVersion )
+}
+
+// Pull the non-Android packages from the library's source tree (pure JVM, no android.* imports).
+compileJava {
+	source(
+		fileTree( "${rootProject.projectDir}/src/main/java" ) {
+			include 'ortus/boxlang/runtime/android/aot/**'
+			include 'ortus/boxlang/runtime/android/mvc/**'
+		}
+	)
+}
+
+// Re-use the root project's downloadBoxLang task; the JAR lands in <root>/libs/ which both
+// the library build and the simulator reference.
+compileJava.dependsOn ':downloadBoxLang'
+
+test {
+	useJUnitPlatform()
+}
