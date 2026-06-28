@@ -1,0 +1,16 @@
+/**
+ * Fixture handler for testing handler-level onError recovery.
+ * The crash() action always throws; onError catches it and sets the error view.
+ */
+class {
+
+	function crash( event, rc ) {
+		throw( type = "TestException", message = "Handler exploded" );
+	}
+
+	function onError( event, rc, exception ) {
+		event.setValue( "errorMessage", exception.getMessage() );
+		event.setView( "failing/error" );
+	}
+
+}

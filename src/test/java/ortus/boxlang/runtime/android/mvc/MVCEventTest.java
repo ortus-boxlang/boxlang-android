@@ -26,6 +26,7 @@ import org.junit.jupiter.api.Test;
 import ortus.boxlang.runtime.BoxRuntime;
 import ortus.boxlang.runtime.scopes.Key;
 import ortus.boxlang.runtime.types.Struct;
+import ortus.boxlang.runtime.types.IStruct;
 
 /**
  * Unit tests for the {@link MVCEvent} request event + collection ({@code rc}).
@@ -97,5 +98,74 @@ class MVCEventTest {
 		event.relocate( "/items" );
 		assertThat( event.isRelocating() ).isTrue();
 		assertThat( event.getRelocateTarget() ).isEqualTo( "/items" );
+	}
+
+	// ── buildLink ─────────────────────────────────────────────────────────────
+
+	@DisplayName( "buildLink() passes a raw path through unchanged" )
+	@Test
+	void testBuildLinkRawPath() {
+		MVCEvent event = new MVCEvent( "GET" );
+		assertThat( event.buildLink( "/about" ) ).isEqualTo( "/about" );
+	}
+
+	@DisplayName( "buildLink() converts Handler.action to /handler/action convention path" )
+	@Test
+	void testBuildLinkConvention() {
+		MVCEvent event = new MVCEvent( "GET" );
+		assertThat( event.buildLink( "Items.show" ) ).isEqualTo( "/items/show" );
+	}
+
+	@DisplayName( "buildLink() appends params as a query string for the convention fallback" )
+	@Test
+	void testBuildLinkConventionWithParams() {
+		MVCEvent event = new MVCEvent( "GET" );
+		IStruct  params = new Struct();
+		params.put( Key.of( "id" ), "42" );
+
+		assertThat( event.buildLink( "Items.show", params ) ).isEqualTo( "/items/show?id=42" );
+	}
+
+	@DisplayName( "buildLink() resolves a named route from the injected router" )
+	@Test
+	void testBuildLinkNamedRoute() {
+		Router router = new Router();
+		router.get( "/items" ).withName( "items" ).to( "Items.list" );
+
+		MVCEvent event = new MVCEvent( "GET" );
+		event.setRouter( router );
+
+		assertThat( event.buildLink( "items" ) ).isEqualTo( "/items" );
+	}
+
+	@DisplayName( "buildLink() fills a named route :placeholder from the params" )
+	@Test
+	void testBuildLinkNamedRouteWithPathParam() {
+		Router router = new Router();
+		router.get( "/items/:id" ).withName( "item.show" ).to( "Items.show" );
+
+		MVCEvent event = new MVCEvent( "GET" );
+		event.setRouter( router );
+
+		IStruct params = new Struct();
+		params.put( Key.of( "id" ), "42" );
+
+		assertThat( event.buildLink( "item.show", params ) ).isEqualTo( "/items/42" );
+	}
+
+	@DisplayName( "buildLink() appends leftover params as a query string for named routes" )
+	@Test
+	void testBuildLinkNamedRouteExtraParams() {
+		Router router = new Router();
+		router.get( "/items/:id" ).withName( "item.show" ).to( "Items.show" );
+
+		MVCEvent event = new MVCEvent( "GET" );
+		event.setRouter( router );
+
+		IStruct params = new Struct();
+		params.put( Key.of( "id" ), "7" );
+		params.put( Key.of( "tab" ), "reviews" );
+
+		assertThat( event.buildLink( "item.show", params ) ).isEqualTo( "/items/7?tab=reviews" );
 	}
 }

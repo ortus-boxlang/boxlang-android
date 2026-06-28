@@ -260,7 +260,22 @@ public class BoxLangSimulator {
 			appListener.onRequestEnd( ctx, new Object[] { uri } );
 
 			if ( result == null ) {
-				exchange.sendResponseHeaders( 204, -1 );
+				// onRequestStart returned false — the app intercepted and handled this request.
+				// In production this means the app wrote its own response (redirect, auth wall, etc.).
+				// In the simulator we surface a dev-friendly page so the browser doesn't go blank.
+				String body = "<html><body style='font-family:monospace;padding:16px'>"
+				    + "<h2>Request Intercepted</h2>"
+				    + "<p><code>onRequestStart()</code> returned <code>false</code> for "
+				    + "<code>" + escapeHtml( uri ) + "</code>.</p>"
+				    + "<p>The application handled (or blocked) this request. "
+				    + "If you expected a page here, check your <code>onRequestStart</code> implementation.</p>"
+				    + "</body></html>";
+				byte[] bytes = body.getBytes( StandardCharsets.UTF_8 );
+				exchange.getResponseHeaders().set( "Content-Type", "text/html; charset=UTF-8" );
+				exchange.sendResponseHeaders( 200, bytes.length );
+				try ( OutputStream out = exchange.getResponseBody() ) {
+					out.write( bytes );
+				}
 				return;
 			}
 

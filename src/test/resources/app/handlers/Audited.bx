@@ -1,0 +1,32 @@
+/**
+ * Fixture handler for testing the pre/post interceptor chain.
+ * Each hook appends a marker to rc.log so tests can verify execution order.
+ * If rc.block is true, preHandler relocates to /login to test short-circuit.
+ */
+class {
+
+	function preHandler( event, rc ) {
+		rc.log = ( structKeyExists( rc, "log" ) ? rc.log : "" ) & "[preHandler]";
+		if ( structKeyExists( rc, "block" ) && rc.block ) {
+			event.relocate( "/login" );
+		}
+	}
+
+	function preDashboard( event, rc ) {
+		rc.log = rc.log & "[preDashboard]";
+	}
+
+	function dashboard( event, rc ) {
+		rc.log = rc.log & "[dashboard]";
+		event.setView( "audited/dashboard" );
+	}
+
+	function postDashboard( event, rc ) {
+		rc.log = rc.log & "[postDashboard]";
+	}
+
+	function postHandler( event, rc ) {
+		rc.log = rc.log & "[postHandler]";
+	}
+
+}

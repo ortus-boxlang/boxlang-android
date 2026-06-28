@@ -209,16 +209,106 @@ var toast = createObject( "java", "android.widget.Toast" );
 
 ## BoxLang modules
 
-Drop modules under `src/main/bx/modules/<name>` (auto-registered via `modulesDirectory`).
+### Module directory layout
 
-On Android, each module keeps its own isolated class loader via per-module DEX:
+Drop modules under `src/main/bx/modules/<name>`. The runtime auto-registers every directory it
+finds there (configured via `modulesDirectory` in `boxlang.json`).
 
-- **Build:** each module's `.bx` is AOT-compiled + extracted, then packaged with its
-  `libs/*.jar` and resources (`META-INF/services`, descriptor, templates) and `d8`-converted
-  to `assets/modules/<name>.jar` (a `classes.dex` + resources archive).
-- **Runtime:** an `AndroidModuleClassLoader` (`DexClassLoader`) loads each module archive,
-  parented to the runtime loader — giving isolation, hierarchy, and working `ServiceLoader`
-  discovery for BIFs/components/interceptors.
+```
+src/main/bx/modules/
+└─ my-module/
+   ├─ ModuleConfig.bx          # required descriptor
+   ├─ libs/                    # optional third-party JARs bundled with the module
+   ├─ models/                  # BoxLang classes exposed by the module
+   ├─ interceptors/            # BoxLang interceptors registered by the module
+   └─ resources/               # static resources (templates, config files, etc.)
+```
+
+### ModuleConfig.bx
+
+Every module must have a `ModuleConfig.bx` at its root. The descriptor declares metadata and
+optional lifecycle hooks:
+
+```java
+class {
+
+    this.title   = "My Module";
+    this.author  = "Ortus Solutions";
+    this.version = "1.0.0";
+
+    function configure() {
+        // Called once when the module is registered.
+        // Register settings, custom tags, interceptors, etc.
+    }
+
+    function onLoad() {
+        // Called after configure() — module is fully loaded and active.
+    }
+
+    function onUnload() {
+        // Called on runtime shutdown or when the module is removed.
+    }
+}
+```
+
+### Using a module from a handler
+
+Once a module is loaded, its public functions and components are available everywhere
+(BIFs, custom tags, interceptors). There is no `import` required for BIFs:
+
+```java
+// handlers/Items.bx
+class {
+    function list( event, rc ) {
+        // Call a BIF registered by a module:
+        rc.items = myModuleBif( someArg = "value" );
+        event.setView( "items/list" );
+    }
+}
+```
+
+For module-provided BoxLang classes, use `createObject`:
+
+```java
+var helper = createObject( "modules.my-module.models.ItemHelper" );
+rc.items   = helper.findAll();
+```
+
+### Module settings in `boxlang.json`
+
+Pass per-module configuration under the `modules` key:
+
+```json
+{
+    "modulesDirectory": [ "modules" ],
+    "modules": {
+        "my-module": {
+            "enabled":  true,
+            "settings": {
+                "apiKey": "abc123",
+                "debug":  false
+            }
+        }
+    }
+}
+```
+
+Settings are available inside `ModuleConfig.bx` via the module's settings struct.
+
+### Android class-loading isolation
+
+On Android, each module runs in its own isolated class loader:
+
+- **Build:** each module's `.bx` source is AOT-compiled, the resulting `.class` files are
+  extracted and packaged with the module's `libs/*.jar` and resources
+  (`META-INF/services`, descriptor, templates). `d8` converts the combined output to a
+  `classes.dex` archive under `assets/modules/<name>.jar`.
+- **Runtime:** `AndroidModuleClassLoader` (a `DexClassLoader`) loads each module archive,
+  parented to the main runtime class loader. This gives full isolation between modules while
+  still allowing them to call BoxLang core APIs and each other via the public runtime surface.
+  `ServiceLoader` discovery (for BIFs, custom components, interceptors) works correctly
+  because each module loader's `META-INF/services` descriptors are seen by the ServiceLoader
+  API through the standard parent-delegation chain.
 
 ---
 

@@ -168,4 +168,55 @@ class MVCDispatcherTest {
 		DispatchResult result = this.dispatcher.dispatch( this.context, "/items?notice=Hello%20World", "GET", null );
 		assertThat( result.getHtml() ).contains( "Hello World" );
 	}
+
+	// ── Interceptor chain ─────────────────────────────────────────────────────
+
+	@DisplayName( "Interceptors run in order: preHandler→pre<Action>→action→post<Action>→postHandler" )
+	@Test
+	void testInterceptorChainOrder() {
+		// Convention routing: /audited/dashboard → Audited.dashboard
+		DispatchResult result = this.dispatcher.dispatch( this.context, "/audited/dashboard", "GET", null );
+
+		assertThat( result.isRelocate() ).isFalse();
+		assertThat( result.getHtml() ).contains( "[preHandler][preDashboard][dashboard][postDashboard][postHandler]" );
+	}
+
+	@DisplayName( "event.relocate() in preHandler short-circuits the action and post hooks" )
+	@Test
+	void testPreHandlerRelocateShortCircuits() {
+		IStruct params = new Struct();
+		params.put( Key.of( "block" ), "true" );
+
+		DispatchResult result = this.dispatcher.dispatch( this.context, "/audited/dashboard", "GET", params );
+
+		assertThat( result.isRelocate() ).isTrue();
+		assertThat( result.getRelocateTarget() ).isEqualTo( "/login" );
+	}
+
+	// ── Handler-level onError ─────────────────────────────────────────────────
+
+	@DisplayName( "Handler onError() recovers from an action exception and renders the error view" )
+	@Test
+	void testOnErrorRecovery() {
+		// Convention routing: /failing/crash → Failing.crash (throws) → onError sets view
+		DispatchResult result = this.dispatcher.dispatch( this.context, "/failing/crash", "GET", null );
+
+		assertThat( result.isRelocate() ).isFalse();
+		assertThat( result.getHtml() ).contains( "Handler exploded" );
+	}
+
+	@DisplayName( "Exceptions propagate when the handler has no onError method" )
+	@Test
+	void testExceptionPropagatesWithoutOnError() {
+		// Use a fresh dispatcher with a single route to Items.explode.
+		// Items has no onError and no 'explode' action, so the BoxLang runtime throws.
+		RoutingService rs = new RoutingService();
+		rs.getRouter().get( "/crash" ).to( "Items.explode" );
+		MVCDispatcher d = new MVCDispatcher( runtime, rs, this.viewRenderer, "app.handlers" );
+
+		org.junit.jupiter.api.Assertions.assertThrows(
+		    Exception.class,
+		    () -> d.dispatch( this.context, "/crash", "GET", null )
+		);
+	}
 }

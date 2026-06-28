@@ -124,17 +124,31 @@ public class MVCDispatcher {
 		// 3. Load handler then run the interceptor chain + action.
 		IClassRunnable handler = loadHandler( context, match.getHandler() );
 
-		// preHandler → pre<Action> → action → post<Action> → postHandler
-		// Each step that calls event.relocate() short-circuits the rest.
-		invokeIfDefined( handler, context, "preHandler", buildArgs( event ) );
-		if ( event.isRelocating() ) return DispatchResult.relocate( event.getRelocateTarget() );
+		// preHandler → pre<Action> → action → post<Action> → postHandler.
+		// Any step that calls event.relocate() short-circuits the rest.
+		// If any step throws, we try the handler-level onError(event, rc, exception) first.
+		try {
+			invokeIfDefined( handler, context, "preHandler", buildArgs( event ) );
+			if ( event.isRelocating() ) return DispatchResult.relocate( event.getRelocateTarget() );
 
-		invokeIfDefined( handler, context, "pre" + capitalize( match.getAction() ), buildArgs( event ) );
-		if ( event.isRelocating() ) return DispatchResult.relocate( event.getRelocateTarget() );
+			invokeIfDefined( handler, context, "pre" + capitalize( match.getAction() ), buildArgs( event ) );
+			if ( event.isRelocating() ) return DispatchResult.relocate( event.getRelocateTarget() );
 
-		handler.dereferenceAndInvoke( context, Key.of( match.getAction() ), buildArgs( event ), false );
+			handler.dereferenceAndInvoke( context, Key.of( match.getAction() ), buildArgs( event ), false );
+		} catch ( Exception handlerException ) {
+			// Try handler-level onError(event, rc, exception) before propagating.
+			Key onErrorKey = Key.of( "onError" );
+			if ( handler.getThisScope().containsKey( onErrorKey ) ) {
+				Map<Key, Object> errorArgs = buildArgs( event );
+				errorArgs.put( Key.of( "exception" ), handlerException );
+				handler.dereferenceAndInvoke( context, onErrorKey, errorArgs, false );
+				// onError may set a view or relocate; fall through to the render step below.
+			} else {
+				throw handlerException;
+			}
+		}
 
-		// 4a. Relocate short-circuits rendering.
+		// 4a. Relocate short-circuits rendering (action or onError may have set it).
 		if ( event.isRelocating() ) {
 			return DispatchResult.relocate( event.getRelocateTarget() );
 		}
