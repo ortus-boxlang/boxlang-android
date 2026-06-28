@@ -63,7 +63,7 @@ public class MVCEvent {
 	/**
 	 * The layout to wrap the view in (relative path under {@code layouts/}, without extension).
 	 */
-	private String				layout			= DEFAULT_LAYOUT;
+	private String				layout;
 
 	/**
 	 * When {@code true}, the view is rendered without a layout.
@@ -87,23 +87,36 @@ public class MVCEvent {
 	private Router				router;
 
 	/**
-	 * Construct an event with a fresh, empty request collection.
+	 * Construct an event with a fresh, empty request collection and the framework default layout.
 	 *
 	 * @param httpMethod The HTTP method of the request (may be {@code null})
 	 */
 	public MVCEvent( String httpMethod ) {
-		this( new Struct(), httpMethod );
+		this( new Struct(), httpMethod, DEFAULT_LAYOUT );
 	}
 
 	/**
-	 * Construct an event with a pre-populated request collection.
+	 * Construct an event with a pre-populated request collection and the framework default layout.
 	 *
 	 * @param rc         The request collection (must not be {@code null})
 	 * @param httpMethod The HTTP method of the request (may be {@code null})
 	 */
 	public MVCEvent( IStruct rc, String httpMethod ) {
+		this( rc, httpMethod, DEFAULT_LAYOUT );
+	}
+
+	/**
+	 * Construct an event with a pre-populated request collection and an explicit default layout.
+	 * Used by the dispatcher to honour the {@code defaultLayout} setting from {@code config/Coldbox.bx}.
+	 *
+	 * @param rc            The request collection (must not be {@code null})
+	 * @param httpMethod    The HTTP method of the request (may be {@code null})
+	 * @param defaultLayout The layout name to use when the action does not call {@link #setLayout}
+	 */
+	public MVCEvent( IStruct rc, String httpMethod, String defaultLayout ) {
 		this.rc			= rc == null ? new Struct() : rc;
 		this.httpMethod	= httpMethod == null ? null : httpMethod.toUpperCase();
+		this.layout		= defaultLayout != null ? defaultLayout : DEFAULT_LAYOUT;
 	}
 
 	/**

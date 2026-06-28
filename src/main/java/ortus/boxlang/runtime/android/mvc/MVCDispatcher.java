@@ -69,18 +69,25 @@ public class MVCDispatcher {
 	private final String			handlersNamespace;
 
 	/**
-	 * Construct a dispatcher with the default {@code handlers} namespace.
+	 * The default layout name applied to every new {@link MVCEvent} when the action does not
+	 * call {@link MVCEvent#setLayout}. Sourced from {@code coldbox.defaultLayout} in
+	 * {@code config/Coldbox.bx}; falls back to {@link MVCEvent#DEFAULT_LAYOUT} when unset.
+	 */
+	private final String			defaultLayout;
+
+	/**
+	 * Construct a dispatcher with the default {@code handlers} namespace and default layout.
 	 *
 	 * @param runtime        The BoxLang runtime
 	 * @param routingService The routing service
 	 * @param viewRenderer   The view renderer
 	 */
 	public MVCDispatcher( BoxRuntime runtime, RoutingService routingService, ViewRenderer viewRenderer ) {
-		this( runtime, routingService, viewRenderer, "handlers" );
+		this( runtime, routingService, viewRenderer, "handlers", MVCEvent.DEFAULT_LAYOUT );
 	}
 
 	/**
-	 * Construct a dispatcher.
+	 * Construct a dispatcher with a custom handler namespace and the default layout.
 	 *
 	 * @param runtime           The BoxLang runtime
 	 * @param routingService    The routing service
@@ -88,10 +95,24 @@ public class MVCDispatcher {
 	 * @param handlersNamespace The dot-delimited handler namespace
 	 */
 	public MVCDispatcher( BoxRuntime runtime, RoutingService routingService, ViewRenderer viewRenderer, String handlersNamespace ) {
+		this( runtime, routingService, viewRenderer, handlersNamespace, MVCEvent.DEFAULT_LAYOUT );
+	}
+
+	/**
+	 * Construct a dispatcher with a custom handler namespace and default layout.
+	 *
+	 * @param runtime           The BoxLang runtime
+	 * @param routingService    The routing service
+	 * @param viewRenderer      The view renderer
+	 * @param handlersNamespace The dot-delimited handler namespace
+	 * @param defaultLayout     The layout name used when an action does not set one
+	 */
+	public MVCDispatcher( BoxRuntime runtime, RoutingService routingService, ViewRenderer viewRenderer, String handlersNamespace, String defaultLayout ) {
 		this.runtime			= runtime;
 		this.routingService		= routingService;
 		this.viewRenderer		= viewRenderer;
 		this.handlersNamespace	= handlersNamespace;
+		this.defaultLayout		= defaultLayout != null ? defaultLayout : MVCEvent.DEFAULT_LAYOUT;
 	}
 
 	/**
@@ -117,7 +138,7 @@ public class MVCDispatcher {
 		}
 		match.getParams().forEach( ( key, value ) -> rc.put( Key.of( key ), value ) );
 
-		MVCEvent event = new MVCEvent( rc, method );
+		MVCEvent event = new MVCEvent( rc, method, this.defaultLayout );
 		event.setCurrentEvent( match.getEvent() );
 		event.setRouter( this.routingService.getRouter() );
 

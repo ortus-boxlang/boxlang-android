@@ -136,23 +136,30 @@ public class BoxLangSimulator {
 		    Key.external, true
 		) );
 
-		// Build the MVC stack pointing at the app's views and layouts.
+		// Read config/Coldbox.bx (if present) for framework settings.
+		// Runs in a bare context — does NOT load Application.bx / fire onApplicationStart.
+		FrameworkConfig cfg = readColdboxConfig( this.runtime, this.appPath );
+
+		// Build the MVC stack using values from config/Coldbox.bx (or defaults).
 		// Register RoutingService as a BoxLang global service so scripts can call
 		// getService('RoutingService') and the runtime fires onShutdown() automatically.
 		RoutingService routingService = new RoutingService();
 		routingService.onConfigurationLoad();
 		routingService.onStartup();
 		this.runtime.putGlobalService( RoutingService.NAME, routingService );
+		// Apply the defaultEvent from config (Router.bx may override it during bootstrapRouter).
+		routingService.getRouter().setDefaultEvent( cfg.defaultEvent() );
 
 		ViewRenderer viewRenderer = new ViewRenderer(
 		    this.runtime,
-		    this.appPath + "/views",
-		    this.appPath + "/layouts"
+		    this.appPath + "/" + cfg.viewsLocation(),
+		    this.appPath + "/" + cfg.layoutsLocation(),
+		    cfg.viewExtension()
 		);
-		this.dispatcher = new MVCDispatcher( this.runtime, routingService, viewRenderer, "app.handlers" );
+		this.dispatcher = new MVCDispatcher( this.runtime, routingService, viewRenderer, "app." + cfg.handlersLocation(), cfg.defaultLayout() );
 
-		// Load Application.bx for the first time: fires onApplicationStart automatically,
-		// then call our configureRouter(router) convention hook if defined.
+		// Load Application.bx (fires onApplicationStart) then wire routes from
+		// config/Router.bx or Application.bx configureRouter().
 		bootstrapRouter( routingService );
 	}
 
@@ -345,6 +352,67 @@ public class BoxLangSimulator {
 		exchange.sendResponseHeaders( 500, bytes.length );
 		try ( OutputStream out = exchange.getResponseBody() ) {
 			out.write( bytes );
+		}
+	}
+
+	// ── Framework config ─────────────────────────────────────────────────────
+
+	private record FrameworkConfig(
+	    String viewsLocation,
+	    String layoutsLocation,
+	    String viewExtension,
+	    String handlersLocation,
+	    String defaultEvent,
+	    String defaultLayout
+	) {
+
+		static FrameworkConfig defaults() {
+			return new FrameworkConfig( "views", "layouts", ".bxm", "handlers", "Main.index",
+			    ortus.boxlang.runtime.android.mvc.MVCEvent.DEFAULT_LAYOUT );
+		}
+
+		static FrameworkConfig from( IStruct coldbox ) {
+			return new FrameworkConfig(
+			    str( coldbox, "viewsLocation", "views" ),
+			    str( coldbox, "layoutsLocation", "layouts" ),
+			    str( coldbox, "viewExtension", ".bxm" ),
+			    str( coldbox, "handlersLocation", "handlers" ),
+			    str( coldbox, "defaultEvent", "Main.index" ),
+			    str( coldbox, "defaultLayout", ortus.boxlang.runtime.android.mvc.MVCEvent.DEFAULT_LAYOUT )
+			);
+		}
+
+		private static String str( IStruct s, String key, String def ) {
+			Object v = s.getOrDefault( Key.of( key ), def );
+			return v != null && !v.toString().isBlank() ? v.toString() : def;
+		}
+	}
+
+	private FrameworkConfig readColdboxConfig( BoxRuntime runtime, String appPath ) {
+		if ( !new File( appPath, "config/Coldbox.bx" ).exists() ) {
+			return FrameworkConfig.defaults();
+		}
+		ScriptingRequestBoxContext ctx = new ScriptingRequestBoxContext( runtime.getRuntimeContext() );
+		try {
+			IClassRunnable coldboxClass = ( IClassRunnable ) ctx.invokeFunction(
+			    Key.of( "createObject" ),
+			    new Object[] { "component", "app.config.Coldbox" }
+			);
+			Object result = coldboxClass.dereferenceAndInvoke( ctx, Key.of( "configure" ), new LinkedHashMap<>(), false );
+			if ( result instanceof IStruct configStruct ) {
+				Object coldboxNode = configStruct.getOrDefault( Key.of( "coldbox" ), null );
+				if ( coldboxNode instanceof IStruct coldbox ) {
+					log.info( "config/Coldbox.bx loaded — framework settings applied." );
+					return FrameworkConfig.from( coldbox );
+				}
+			}
+			log.warn( "config/Coldbox.bx configure() did not return a {{coldbox:{{...}}}} struct — using defaults." );
+			return FrameworkConfig.defaults();
+		} catch ( Exception e ) {
+			log.warn( "Could not load config/Coldbox.bx ({}), using defaults.", e.getMessage() );
+			return FrameworkConfig.defaults();
+		} finally {
+			ctx.shutdown();
 		}
 	}
 

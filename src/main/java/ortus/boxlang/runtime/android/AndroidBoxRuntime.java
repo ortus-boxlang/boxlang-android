@@ -37,6 +37,7 @@ import ortus.boxlang.runtime.context.RequestBoxContext;
 import ortus.boxlang.runtime.context.ScriptingRequestBoxContext;
 import ortus.boxlang.runtime.runnables.IClassRunnable;
 import ortus.boxlang.runtime.scopes.Key;
+import ortus.boxlang.runtime.types.IStruct;
 import ortus.boxlang.runtime.types.Struct;
 
 /**
@@ -122,7 +123,12 @@ public final class AndroidBoxRuntime {
 		    Key.external, true
 		) );
 
-		// 6. Build the MVC stack.
+		// 6. Read config/Coldbox.bx (if present) to get framework settings.
+		// This runs in a bare scripting context — it does NOT load Application.bx / fire
+		// onApplicationStart; that happens later in bootstrapRouter().
+		FrameworkConfig cfg = readColdboxConfig( runtime, appHome );
+
+		// 7. Build the MVC stack using values from config/Coldbox.bx (or defaults).
 		// Register the RoutingService as a BoxLang global service so:
 		//   (a) BoxLang scripts can call getService('RoutingService') / getRouter()
 		//   (b) The runtime fires onShutdown() automatically on process exit.
@@ -132,18 +138,22 @@ public final class AndroidBoxRuntime {
 		routingService.onConfigurationLoad();
 		routingService.onStartup();
 		runtime.putGlobalService( RoutingService.NAME, routingService );
+		// Apply the defaultEvent from config (Router.bx may override it during bootstrapRouter).
+		routingService.getRouter().setDefaultEvent( cfg.defaultEvent() );
 
 		ViewRenderer	viewRenderer	= new ViewRenderer(
 		    runtime,
-		    new File( appHome, "views" ).getAbsolutePath(),
-		    new File( appHome, "layouts" ).getAbsolutePath()
+		    new File( appHome, cfg.viewsLocation() ).getAbsolutePath(),
+		    new File( appHome, cfg.layoutsLocation() ).getAbsolutePath(),
+		    cfg.viewExtension()
 		);
-		MVCDispatcher	dispatcher		= new MVCDispatcher( runtime, routingService, viewRenderer, "app.handlers" );
+		MVCDispatcher	dispatcher		= new MVCDispatcher( runtime, routingService, viewRenderer, "app." + cfg.handlersLocation(), cfg.defaultLayout() );
 
 		instance = new AndroidBoxRuntime( runtime, appHome, routingService, dispatcher );
 
-		// 7. Load Application.bx (fires onApplicationStart automatically) and call
-		// our configureRouter(router) convention hook if the app defines it.
+		// 8. Load Application.bx (fires onApplicationStart automatically) and register routes
+		// from config/Router.bx or Application.bx configureRouter() (Router.bx may also
+		// override the defaultEvent set above).
 		instance.bootstrapRouter();
 
 		return instance;
@@ -239,6 +249,78 @@ public final class AndroidBoxRuntime {
 		} finally {
 			ctx.shutdown();
 			RequestBoxContext.removeCurrent();
+		}
+	}
+
+	// ── Framework config ──────────────────────────────────────────────────────
+
+	/**
+	 * Framework settings read from {@code config/Coldbox.bx} at boot time.
+	 * All fields fall back to sensible defaults when the file is absent or a key is omitted.
+	 */
+	private record FrameworkConfig(
+	    String viewsLocation,
+	    String layoutsLocation,
+	    String viewExtension,
+	    String handlersLocation,
+	    String defaultEvent,
+	    String defaultLayout
+	) {
+
+		static FrameworkConfig defaults() {
+			return new FrameworkConfig( "views", "layouts", ".bxm", "handlers", "Main.index",
+			    ortus.boxlang.runtime.android.mvc.MVCEvent.DEFAULT_LAYOUT );
+		}
+
+		static FrameworkConfig from( IStruct coldbox ) {
+			return new FrameworkConfig(
+			    str( coldbox, "viewsLocation", "views" ),
+			    str( coldbox, "layoutsLocation", "layouts" ),
+			    str( coldbox, "viewExtension", ".bxm" ),
+			    str( coldbox, "handlersLocation", "handlers" ),
+			    str( coldbox, "defaultEvent", "Main.index" ),
+			    str( coldbox, "defaultLayout", ortus.boxlang.runtime.android.mvc.MVCEvent.DEFAULT_LAYOUT )
+			);
+		}
+
+		private static String str( IStruct s, String key, String def ) {
+			Object v = s.getOrDefault( Key.of( key ), def );
+			return v != null && !v.toString().isBlank() ? v.toString() : def;
+		}
+	}
+
+	/**
+	 * Load {@code config/Coldbox.bx} and return the framework settings it declares.
+	 * Falls back to {@link FrameworkConfig#defaults()} when the file is absent or fails to load.
+	 * <p>
+	 * Uses a bare scripting context (no application listener) — {@code onApplicationStart} is
+	 * fired later in {@link #bootstrapRouter()}.
+	 */
+	private static FrameworkConfig readColdboxConfig( BoxRuntime runtime, File appHome ) {
+		if ( !new File( appHome, "config/Coldbox.bx" ).exists() ) {
+			return FrameworkConfig.defaults();
+		}
+		ScriptingRequestBoxContext ctx = new ScriptingRequestBoxContext( runtime.getRuntimeContext() );
+		try {
+			IClassRunnable coldboxClass = ( IClassRunnable ) ctx.invokeFunction(
+			    Key.of( "createObject" ),
+			    new Object[] { "component", "app.config.Coldbox" }
+			);
+			Object result = coldboxClass.dereferenceAndInvoke( ctx, Key.of( "configure" ), new LinkedHashMap<>(), false );
+			if ( result instanceof IStruct configStruct ) {
+				Object coldboxNode = configStruct.getOrDefault( Key.of( "coldbox" ), null );
+				if ( coldboxNode instanceof IStruct coldbox ) {
+					log.info( "BoxLang Android: config/Coldbox.bx loaded — framework settings applied." );
+					return FrameworkConfig.from( coldbox );
+				}
+			}
+			log.warn( "BoxLang Android: config/Coldbox.bx configure() did not return a {coldbox:{...}} struct — using defaults." );
+			return FrameworkConfig.defaults();
+		} catch ( Exception e ) {
+			log.warn( "BoxLang Android: Could not load config/Coldbox.bx ({}), using defaults.", e.getMessage() );
+			return FrameworkConfig.defaults();
+		} finally {
+			ctx.shutdown();
 		}
 	}
 

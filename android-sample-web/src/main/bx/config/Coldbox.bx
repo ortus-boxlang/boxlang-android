@@ -1,0 +1,38 @@
+/**
+ * BoxLang MVC framework configuration — mirrors the ColdBox config/ColdBox.cfc convention.
+ *
+ * The framework calls configure() once at boot, before routes are wired, and applies the
+ * returned settings to the MVC stack (view renderer, dispatcher, router). Any key omitted
+ * here falls back to the framework default shown in the comments.
+ *
+ * Priority (lowest → highest):
+ *   Java defaults  <  config/Coldbox.bx  <  config/Router.bx router.setDefaultEvent()
+ */
+class {
+
+	function configure() {
+		return {
+			// ---- Core framework settings ----
+			coldbox : {
+				appName          : "BoxLangWebSample",  // Informational; shown in logs
+				defaultEvent     : "Main.index",         // Event when no route matches
+				defaultLayout    : "main",               // Layout file under layoutsLocation/
+				defaultView      : "",                   // View override (empty = handler decides)
+				handlersLocation : "handlers",           // Folder under app root for handlers
+				viewsLocation    : "views",              // Folder under app root for views
+				layoutsLocation  : "layouts",            // Folder under app root for layouts
+				modelsLocation   : "models",             // Folder under app root for models
+				viewExtension    : ".bxm"                // Template file extension
+			},
+
+			// ---- Custom application settings (available to handlers via rc or getService) ----
+			settings : {},
+
+			// ---- Environment detection (regex matched against hostname) ----
+			environments : {
+				development : "localhost"
+			}
+		};
+	}
+
+}
