@@ -150,6 +150,11 @@ public class BoxWebViewRenderer {
 			appListener.onRequestEnd( ctx, new Object[] { path } );
 
 			if ( result == null ) {
+				// onRequestStart returned false — the app intercepted the request.
+				// In production, onRequestStart typically writes its own output or navigates
+				// elsewhere before returning false. We leave the WebView on the current page
+				// rather than blanking it out.
+				log.debug( "BoxLang Android: onRequestStart blocked {} {} — WebView unchanged.", method, path );
 				return;
 			}
 

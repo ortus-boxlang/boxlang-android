@@ -6,10 +6,15 @@
  * on BoxLang templates and handler logic without Android Studio or a physical device.
  *
  * Usage:
- *   ./gradlew :simulator:run --args="--app ../android-sample-web/src/main/bx --port 8085"
+ *   gradle :simulator:run --args="--app ../android-sample-web/src/main/bx --port 8085"
  *
  * The non-Android MVC and AOT source packages (aot/*, mvc/*) are compiled directly from
  * the library's src/main/java tree — no code duplication and no Android SDK required.
+ *
+ * All unit tests (MVC + AOT) are wired into this project's test source set so they run
+ * on a plain JVM without the Android SDK:
+ *
+ *   gradle :simulator:test
  */
 plugins {
 	id 'application'
@@ -27,6 +32,14 @@ dependencies {
 	implementation 'org.slf4j:slf4j-api:2.0.18'
 	implementation 'org.ow2.asm:asm:9.9.1'
 	runtimeOnly 'ch.qos.logback:logback-classic:1.5.32'
+
+	// ── Unit tests ────────────────────────────────────────────────────────────
+	// Shared by all test classes: MVC (Router, MVCDispatcher, ViewRenderer …)
+	// and AOT pipeline (BXCompiler, BoxClassExtractor, ModuleArchiver).
+	testImplementation "org.junit.jupiter:junit-jupiter:6.+"
+	testImplementation "com.google.truth:truth:1.4.4"
+	testRuntimeOnly   "org.junit.platform:junit-platform-launcher"
+	testRuntimeOnly   'ch.qos.logback:logback-classic:1.5.32'
 }
 
 application {
@@ -38,6 +51,8 @@ java {
 	targetCompatibility = JavaVersion.toVersion( jdkVersion )
 }
 
+// ── Source sets ───────────────────────────────────────────────────────────────
+
 // Pull the non-Android packages from the library's source tree (pure JVM, no android.* imports).
 compileJava {
 	source(
@@ -48,10 +63,29 @@ compileJava {
 	)
 }
 
+// Wire the library's test sources and resources into this project so all MVC/AOT
+// unit tests run here with: gradle :simulator:test
+sourceSets {
+	test {
+		java {
+			srcDir "${rootProject.projectDir}/src/test/java"
+		}
+		resources {
+			srcDir "${rootProject.projectDir}/src/test/resources"
+		}
+	}
+}
+
 // Re-use the root project's downloadBoxLang task; the JAR lands in <root>/libs/ which both
 // the library build and the simulator reference.
 compileJava.dependsOn ':downloadBoxLang'
 
+// ── Test task ────────────────────────────────────────────────────────────────
+
 test {
 	useJUnitPlatform()
+
+	// AOT pipeline tests use Paths.get("src/test/resources/...") — set the working directory
+	// to the root project so those relative paths resolve correctly.
+	workingDir = rootProject.projectDir
 }
