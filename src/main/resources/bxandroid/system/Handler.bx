@@ -1,0 +1,65 @@
+/**
+ * BoxLang Android — Base Handler
+ *
+ * All application handlers should extend this class.
+ * Equivalent to ColdBox's coldbox.system.EventHandler.
+ *
+ * Provides:
+ *  - Default preHandler / postHandler lifecycle stubs (override to add guards, logging, etc.)
+ *  - Default onError recovery (override for custom error pages or reporting)
+ *  - relocate() helper — alias for event.relocate() matching ColdBox convention
+ *  - All FrameworkSupertype helpers: getInstance(), getSetting(), announce(), etc.
+ *
+ * Usage in your handler:
+ *   class extends="bxandroid.system.Handler" {
+ *       function index( event, rc ) {
+ *           event.setValue( "title", "Hello" );
+ *           event.setView( "main/index" );
+ *       }
+ *   }
+ */
+class extends="bxandroid.system.FrameworkSupertype" {
+
+	/**
+	 * Runs before every action in this handler.
+	 * Override to add authentication guards, request logging, header injection, etc.
+	 *
+	 * Return nothing (or true) to continue; call event.relocate() to short-circuit.
+	 */
+	function preHandler( event, rc ) {
+		// Default: no-op — override in your handler to add cross-cutting behaviour.
+	}
+
+	/**
+	 * Runs after every action in this handler (before the view renders).
+	 * Override to add cleanup, response transforms, or audit logging.
+	 */
+	function postHandler( event, rc ) {
+		// Default: no-op
+	}
+
+	/**
+	 * Called when any action in this handler throws an unhandled exception.
+	 * Override to add error reporting (Bugsnag, Firebase Crashlytics, etc.) or
+	 * render a custom error page.
+	 *
+	 * The default renders views/shared/error.bxm (create this file to customise).
+	 * rc.errorMessage and rc.exception are set so the view can display details.
+	 */
+	function onError( event, rc, exception ) {
+		event.setValue( "exception", exception );
+		event.setValue( "errorMessage", exception.getMessage() );
+		event.setView( "shared/error" );
+	}
+
+	/**
+	 * Alias for event.relocate() — matches ColdBox's relocate() handler helper.
+	 *
+	 * @event The current MVC event
+	 * @uri   The destination URI or named route
+	 */
+	function relocate( required event, required string uri ) {
+		event.relocate( uri );
+	}
+
+}

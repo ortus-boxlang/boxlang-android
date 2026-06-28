@@ -76,6 +76,16 @@ sourceSets {
 	}
 }
 
+// Bundle the framework's core BX files (bxandroid/system/*.bx) onto the simulator's
+// classpath so BoxLangSimulator can extract them at boot and register the /bxandroid mapping.
+// We include ONLY the bxandroid/ subtree — the META-INF/services/ files (which select
+// PreloadedBoxpiler on Android) are deliberately excluded so tests keep using ASMBoxpiler.
+processResources {
+	from( fileTree( "${rootProject.projectDir}/src/main/resources" ) {
+		include 'bxandroid/**'
+	})
+}
+
 // Re-use the root project's downloadBoxLang task; the JAR lands in <root>/libs/ which both
 // the library build and the simulator reference.
 compileJava.dependsOn ':downloadBoxLang'

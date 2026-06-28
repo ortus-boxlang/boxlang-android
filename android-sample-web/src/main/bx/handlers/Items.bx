@@ -2,7 +2,7 @@
  * The Items handler — demonstrates the handler-first flow: each action runs first,
  * populates rc, and chooses the view/layout (or relocates with a query-string notice).
  */
-class {
+class extends="bxandroid.system.Handler" {
 
 	// GET /items
 	function list( event, rc ) {

@@ -1,0 +1,71 @@
+/**
+ * BoxLang Android — Framework Super Type
+ *
+ * The root of all BoxLang Android MVC class hierarchies: handlers, interceptors,
+ * scheduled tasks, etc. all inherit from this class, exactly as ColdBox components
+ * inherit from coldbox.system.FrameworkSupertype.
+ *
+ * Available in every framework class automatically — no import required.
+ */
+class {
+
+	/**
+	 * Get a model instance from the app's models/ folder.
+	 * Equivalent to ColdBox's getInstance() / getModel().
+	 *
+	 * @name The model name (e.g. "UserService" → app/models/UserService.bx)
+	 */
+	function getInstance( required string name ) {
+		return createObject( "app.models.#name#" );
+	}
+
+	/**
+	 * Alias for getInstance() — matches the ColdBox getModel() convention.
+	 */
+	function getModel( required string name ) {
+		return getInstance( name );
+	}
+
+	/**
+	 * Read a custom application setting.
+	 * Settings are stored in application._bxSettings, which the framework
+	 * populates from the settings{} struct in config/Coldbox.bx at boot.
+	 *
+	 * @name         The setting key
+	 * @defaultValue Returned when the key is absent
+	 */
+	function getSetting( required string name, any defaultValue = "" ) {
+		if ( isDefined( "application._bxSettings" ) && application._bxSettings.keyExists( name ) ) {
+			return application._bxSettings[ name ];
+		}
+		return defaultValue;
+	}
+
+	/**
+	 * Announce an interceptor state. (Stub — interceptors not yet implemented.)
+	 * Override to integrate your own pub/sub mechanism.
+	 *
+	 * @state The interceptor state name (e.g. "preProcess", "postProcess")
+	 * @data  Arbitrary data passed to all interceptors listening to this state
+	 */
+	function announce( required string state, struct data = {} ) {
+		// Future: dispatch to registered interceptors
+		return this;
+	}
+
+	/**
+	 * Get a value from the application scope with an optional default.
+	 */
+	function getApplicationValue( required string name, any defaultValue = "" ) {
+		return application.keyExists( name ) ? application[ name ] : defaultValue;
+	}
+
+	/**
+	 * Set a value in the application scope and return this for chaining.
+	 */
+	function setApplicationValue( required string name, required any value ) {
+		application[ name ] = value;
+		return this;
+	}
+
+}

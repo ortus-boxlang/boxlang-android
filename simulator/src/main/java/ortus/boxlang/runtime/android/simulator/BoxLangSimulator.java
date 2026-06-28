@@ -136,6 +136,15 @@ public class BoxLangSimulator {
 		    Key.external, true
 		) );
 
+		// Extract the framework's core BX files (FrameworkSupertype, Handler …) to
+		// <appPath>/bxandroid/ and register the /bxandroid mapping so handlers can use
+		// class extends="bxandroid.system.Handler"
+		extractFrameworkFiles( this.appPath );
+		this.runtime.getConfiguration().registerMapping( "/bxandroid", Struct.of(
+		    Key.path, this.appPath + "/bxandroid",
+		    Key.external, true
+		) );
+
 		// Read config/Coldbox.bx (if present) for framework settings.
 		// Runs in a bare context — does NOT load Application.bx / fire onApplicationStart.
 		FrameworkConfig cfg = readColdboxConfig( this.runtime, this.appPath );
@@ -352,6 +361,29 @@ public class BoxLangSimulator {
 		exchange.sendResponseHeaders( 500, bytes.length );
 		try ( OutputStream out = exchange.getResponseBody() ) {
 			out.write( bytes );
+		}
+	}
+
+	// ── Framework BX files ───────────────────────────────────────────────────
+
+	private static final String[] FRAMEWORK_BX_FILES = {
+	    "bxandroid/system/FrameworkSupertype.bx",
+	    "bxandroid/system/Handler.bx"
+	};
+
+	private static void extractFrameworkFiles( String appPath ) {
+		for ( String resource : FRAMEWORK_BX_FILES ) {
+			File target = new File( appPath, resource );
+			target.getParentFile().mkdirs();
+			try ( java.io.InputStream in = BoxLangSimulator.class.getClassLoader().getResourceAsStream( resource ) ) {
+				if ( in == null ) {
+					log.warn( "Framework resource not found on classpath: {}", resource );
+					continue;
+				}
+				java.nio.file.Files.copy( in, target.toPath(), java.nio.file.StandardCopyOption.REPLACE_EXISTING );
+			} catch ( Exception e ) {
+				log.warn( "Could not extract framework file {} ({})", resource, e.getMessage() );
+			}
 		}
 	}
 

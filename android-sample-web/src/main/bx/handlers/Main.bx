@@ -1,7 +1,7 @@
 /**
  * The default handler. The root route (/) resolves to Main.index by convention.
  */
-class {
+class extends="bxandroid.system.Handler" {
 
 	// GET / -> the app's first screen
 	function index( event, rc ) {

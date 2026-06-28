@@ -123,6 +123,15 @@ public final class AndroidBoxRuntime {
 		    Key.external, true
 		) );
 
+		// 5b. Extract the framework's core BX files (FrameworkSupertype, Handler …) from the
+		// library classpath to appHome/bxandroid/ and register the /bxandroid mapping so
+		// handler classes can use: class extends="bxandroid.system.Handler"
+		extractFrameworkFiles( appHome );
+		runtime.getConfiguration().registerMapping( "/bxandroid", Struct.of(
+		    Key.path, new File( appHome, "bxandroid" ).getAbsolutePath(),
+		    Key.external, true
+		) );
+
 		// 6. Read config/Coldbox.bx (if present) to get framework settings.
 		// This runs in a bare scripting context — it does NOT load Application.bx / fire
 		// onApplicationStart; that happens later in bootstrapRouter().
@@ -249,6 +258,39 @@ public final class AndroidBoxRuntime {
 		} finally {
 			ctx.shutdown();
 			RequestBoxContext.removeCurrent();
+		}
+	}
+
+	// ── Framework BX files ───────────────────────────────────────────────────
+
+	/**
+	 * The framework's core BX class files, shipped as classpath resources under
+	 * {@code /bxandroid/system/} and extracted to {@code <appHome>/bxandroid/system/}
+	 * at boot so the {@code /bxandroid} mapping can resolve them.
+	 */
+	private static final String[] FRAMEWORK_BX_FILES = {
+	    "bxandroid/system/FrameworkSupertype.bx",
+	    "bxandroid/system/Handler.bx"
+	};
+
+	/**
+	 * Extract the framework's core BX files from the library classpath to
+	 * {@code <appHome>/bxandroid/}. Always overwrites so the files stay in
+	 * sync when the library is updated.
+	 */
+	private static void extractFrameworkFiles( File appHome ) {
+		for ( String resource : FRAMEWORK_BX_FILES ) {
+			File target = new File( appHome, resource );
+			target.getParentFile().mkdirs();
+			try ( java.io.InputStream in = AndroidBoxRuntime.class.getClassLoader().getResourceAsStream( resource ) ) {
+				if ( in == null ) {
+					log.warn( "BoxLang Android: framework resource not found on classpath: {}", resource );
+					continue;
+				}
+				java.nio.file.Files.copy( in, target.toPath(), java.nio.file.StandardCopyOption.REPLACE_EXISTING );
+			} catch ( Exception e ) {
+				log.warn( "BoxLang Android: could not extract framework file {} ({})", resource, e.getMessage() );
+			}
 		}
 	}
 
