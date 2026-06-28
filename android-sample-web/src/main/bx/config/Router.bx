@@ -1,0 +1,20 @@
+/**
+ * Route table for the BoxLang web sample app.
+ *
+ * Loaded automatically at boot when this file exists at config/Router.bx.
+ * The framework calls configure(router) once after Application.bx fires
+ * onApplicationStart — no Java code needed.
+ */
+class {
+
+	function configure( router ) {
+		// Root maps to the default event by convention.
+		router.setDefaultEvent( "Main.index" );
+
+		// Items resource
+		router.get( "/items" ).withName( "items" ).to( "Items.list" );
+		router.get( "/items/:id" ).to( "Items.show" );
+		router.post( "/items/add" ).to( "Items.add" );
+	}
+
+}

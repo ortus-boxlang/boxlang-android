@@ -161,31 +161,49 @@ public class BoxLangSimulator {
 	/**
 	 * Create a bootstrap request context to load the application descriptor.
 	 * The BoxLang application service fires {@code onApplicationStart} automatically.
-	 * We then call the {@code configureRouter(router)} hook if the app defines it.
+	 * Routes are then wired using the first convention that matches:
+	 * <ol>
+	 * <li><b>{@code config/Router.bx}</b> (preferred) — loaded as a BoxLang class;
+	 * its {@code configure(router)} method is called.</li>
+	 * <li><b>{@code configureRouter(router)}</b> in {@code Application.bx} (inline fallback).</li>
+	 * </ol>
 	 */
 	private void bootstrapRouter( RoutingService routingService ) {
 		ScriptingRequestBoxContext ctx = new ScriptingRequestBoxContext( this.runtime.getRuntimeContext(), true );
 		RequestBoxContext.setCurrent( ctx );
 		try {
+			// Load Application.bx — fires onApplicationStart automatically.
 			BaseApplicationListener appListener = ctx.getApplicationListener();
 
-			if ( appListener instanceof ApplicationClassListener acl ) {
+			// Convention 1: config/Router.bx — preferred separation-of-concerns approach.
+			if ( new File( this.appPath, "config/Router.bx" ).exists() ) {
+				@SuppressWarnings( "unchecked" )
+				IClassRunnable routerClass = ( IClassRunnable ) ctx.invokeFunction(
+				    Key.of( "createObject" ),
+				    new Object[] { "component", "app.config.Router" }
+				);
+				Map<Key, Object> args = new LinkedHashMap<>();
+				args.put( Key.of( "router" ), routingService.getRouter() );
+				routerClass.dereferenceAndInvoke( ctx, Key.of( "configure" ), args, false );
+				log.info( "config/Router.bx loaded — routes registered, onApplicationStart fired." );
+			}
+			// Convention 2: configureRouter(router) inline in Application.bx — inline fallback.
+			else if ( appListener instanceof ApplicationClassListener acl ) {
 				IClassRunnable	listenerClass	= acl.getListenerClass();
 				Key				routerKey		= Key.of( "configureRouter" );
-
 				if ( listenerClass.getThisScope().containsKey( routerKey ) ) {
 					Map<Key, Object> args = new LinkedHashMap<>();
 					args.put( Key.of( "router" ), routingService.getRouter() );
 					listenerClass.dereferenceAndInvoke( ctx, routerKey, args, false );
-					log.info( "Application.bx bootstrapped — configureRouter() complete, onApplicationStart fired." );
+					log.info( "Application.bx configureRouter() called — routes registered, onApplicationStart fired." );
 				} else {
-					log.info( "Application.bx loaded — no configureRouter(), using convention routing." );
+					log.info( "Application.bx loaded — no router config found, using convention routing." );
 				}
 			} else {
 				log.warn( "No Application.bx found — using convention routing only." );
 			}
 		} catch ( Exception e ) {
-			log.warn( "Could not bootstrap Application.bx ({}): using convention routing only.", e.getMessage() );
+			log.warn( "Could not bootstrap router ({}): using convention routing only.", e.getMessage() );
 		} finally {
 			ctx.shutdown();
 			RequestBoxContext.removeCurrent();

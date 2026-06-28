@@ -193,9 +193,14 @@ public final class AndroidBoxRuntime {
 
 	/**
 	 * Load {@code Application.bx} once at boot time so the BoxLang application service
-	 * creates the application scope and fires {@code onApplicationStart}. Then call our
-	 * {@code configureRouter(router)} convention hook if the app defines it.
-	 * <p>
+	 * creates the application scope and fires {@code onApplicationStart}. Then wire up
+	 * the router using the first convention that matches:
+	 * <ol>
+	 * <li><b>{@code config/Router.bx}</b> (preferred) — if this file exists in the app home,
+	 * it is loaded as a BoxLang class and its {@code configure(router)} method is called.</li>
+	 * <li><b>{@code configureRouter(router)}</b> in {@code Application.bx} (inline fallback)
+	 * — called when no separate Router file is present.</li>
+	 * </ol>
 	 * Subsequent per-request contexts will find the application already running and will
 	 * NOT re-fire {@code onApplicationStart}.
 	 */
@@ -203,21 +208,34 @@ public final class AndroidBoxRuntime {
 		ScriptingRequestBoxContext ctx = new ScriptingRequestBoxContext( this.runtime.getRuntimeContext(), true );
 		RequestBoxContext.setCurrent( ctx );
 		try {
+			// Load Application.bx — fires onApplicationStart automatically.
 			BaseApplicationListener appListener = ctx.getApplicationListener();
 
-			if ( appListener instanceof ApplicationClassListener acl ) {
-				IClassRunnable listenerClass = acl.getListenerClass();
-				Key            routerKey     = Key.of( "configureRouter" );
-
+			// Convention 1: config/Router.bx — preferred separation-of-concerns approach.
+			if ( new File( this.appHome, "config/Router.bx" ).exists() ) {
+				@SuppressWarnings( "unchecked" )
+				IClassRunnable routerClass = ( IClassRunnable ) ctx.invokeFunction(
+				    Key.of( "createObject" ),
+				    new Object[] { "component", "app.config.Router" }
+				);
+				Map<Key, Object> args = new LinkedHashMap<>();
+				args.put( Key.of( "router" ), this.routingService.getRouter() );
+				routerClass.dereferenceAndInvoke( ctx, Key.of( "configure" ), args, false );
+				log.info( "BoxLang Android: config/Router.bx loaded — routes registered." );
+			}
+			// Convention 2: configureRouter(router) inline in Application.bx — inline fallback.
+			else if ( appListener instanceof ApplicationClassListener acl ) {
+				IClassRunnable	listenerClass	= acl.getListenerClass();
+				Key				routerKey		= Key.of( "configureRouter" );
 				if ( listenerClass.getThisScope().containsKey( routerKey ) ) {
 					Map<Key, Object> args = new LinkedHashMap<>();
 					args.put( Key.of( "router" ), this.routingService.getRouter() );
 					listenerClass.dereferenceAndInvoke( ctx, routerKey, args, false );
-					log.info( "BoxLang Android: configureRouter() called — routes registered." );
+					log.info( "BoxLang Android: Application.bx configureRouter() called — routes registered." );
 				}
 			}
 		} catch ( Exception e ) {
-			log.warn( "BoxLang Android: Could not bootstrap Application.bx ({}). Using convention routing.", e.getMessage() );
+			log.warn( "BoxLang Android: Could not bootstrap router ({}). Using convention routing.", e.getMessage() );
 		} finally {
 			ctx.shutdown();
 			RequestBoxContext.removeCurrent();
